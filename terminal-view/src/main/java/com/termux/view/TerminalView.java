@@ -312,7 +312,14 @@ public final class TerminalView extends View {
         // initially started with the alternate view or if activity is returned to from another app
         // and the alternate view was the one selected the last time.
         if (mClient.isTerminalViewSelected()) {
-            if (mClient.shouldEnforceCharBasedInput()) {
+            final int keyboardMode = mClient.getKeyboardMode();
+            if (keyboardMode == TerminalViewClient.KEYBOARD_MODE_IME) {
+                // Report a real text field so that IMEs that need one, like CJK IMEs for candidate
+                // selection, provide full composition and candidate UI. The composing text is kept
+                // in the local editable of the input connection below and is only sent to the
+                // terminal once it is committed, so no partial text reaches the terminal.
+                outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
+            } else if (keyboardMode == TerminalViewClient.KEYBOARD_MODE_SECURE) {
                 // Some keyboards seems do not reset the internal state on TYPE_NULL.
                 // Affects mostly Samsung stock keyboards.
                 // https://github.com/termux/termux-app/issues/686
@@ -338,7 +345,9 @@ public final class TerminalView extends View {
 
         // Note that IME_ACTION_NONE cannot be used as that makes it impossible to input newlines using the on-screen
         // keyboard on Android TV (see https://github.com/termux/termux-app/issues/221).
-        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN;
+        // IME_FLAG_NO_EXTRACT_UI stops the IME from showing its full-screen/half-screen extracted text overlay over
+        // the terminal in landscape or large screen mode, where the terminal itself is already big enough.
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
 
         return new BaseInputConnection(this, true) {
 

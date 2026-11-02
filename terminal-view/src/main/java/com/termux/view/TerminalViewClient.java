@@ -32,6 +32,22 @@ public interface TerminalViewClient {
 
     boolean shouldEnforceCharBasedInput();
 
+    /** The {@code inputType} passed to the IME is {@link android.text.InputType#TYPE_NULL}. */
+    int KEYBOARD_MODE_STANDARD = 0;
+    /** The {@code inputType} passed to the IME is normal text input, for IMEs that need a real text field. */
+    int KEYBOARD_MODE_IME = 1;
+    /** The {@code inputType} passed to the IME is a visible password, which disables suggestions. */
+    int KEYBOARD_MODE_SECURE = 2;
+
+    /**
+     * The keyboard mode that defines the {@code inputType} reported to the IME. Defaults to
+     * {@link #KEYBOARD_MODE_SECURE} if {@link #shouldEnforceCharBasedInput()} is {@code true}, and
+     * to {@link #KEYBOARD_MODE_STANDARD} otherwise.
+     */
+    default int getKeyboardMode() {
+        return shouldEnforceCharBasedInput() ? KEYBOARD_MODE_SECURE : KEYBOARD_MODE_STANDARD;
+    }
+
     boolean shouldUseCtrlSpaceWorkaround();
 
     boolean isTerminalViewSelected();
