@@ -428,6 +428,13 @@ public final class TerminalView extends View {
             }
 
             void sendTextToTerminal(CharSequence text) {
+                // Ctrl may be latched on the extra keys bar, and reading it clears it, so it is read
+                // once here and passed on to inputCodePoint() below.
+                final boolean controlDown = mClient.readControlKey();
+                // The client may want to act on the selected text, like copying it on Ctrl+C, and it
+                // has to get the chance before the selection is cleared below. Key events get the
+                // same chance in onKeyDown().
+                if (isSelectingText() && mClient.onTextInputWhileSelectingText(text, controlDown)) return;
                 stopTextSelectionMode();
                 final int textLengthInChars = text.length();
                 for (int i = 0; i < textLengthInChars; i++) {
@@ -479,7 +486,7 @@ public final class TerminalView extends View {
                         }
                     }
 
-                    inputCodePoint(KEY_EVENT_SOURCE_SOFT_KEYBOARD, codePoint, ctrlHeld, false);
+                    inputCodePoint(KEY_EVENT_SOURCE_SOFT_KEYBOARD, codePoint, ctrlHeld || controlDown, false);
                 }
             }
 

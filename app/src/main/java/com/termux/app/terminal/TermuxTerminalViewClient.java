@@ -275,6 +275,15 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
             mActivity.getTerminalView().copySelectionToClipboard();
     }
 
+    @Override
+    public boolean onTextInputWhileSelectingText(CharSequence text, boolean controlDown) {
+        // Text input cannot carry the modifier keys, so only the Ctrl latched on the extra keys bar
+        // can be checked. A paste may also need Shift, so it is read too.
+        if (!controlDown || text.length() != 1) return false;
+        if (mActivity.getProperties().areHardwareKeyboardShortcutsDisabled()) return false;
+        return onClipboardShortcut(text.charAt(0), readShiftKey());
+    }
+
     @SuppressLint("RtlHardcoded")
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession currentSession) {

@@ -71,6 +71,19 @@ public interface TerminalViewClient {
         return false;
     }
 
+    /**
+     * Called from {@link TerminalView} when text is about to be written to the terminal while text
+     * is selected, before the selection is cleared. The counterpart of
+     * {@link #onKeyDownWhileSelectingText(int, KeyEvent)} for input that does not arrive as a
+     * {@link KeyEvent}, like text committed by the IME.
+     *
+     * @return {@code true} if the text was consumed, otherwise {@code false} to let the selection be
+     * cleared and the text be written as usual.
+     */
+    default boolean onTextInputWhileSelectingText(CharSequence text, boolean controlDown) {
+        return false;
+    }
+
     boolean onKeyUp(int keyCode, KeyEvent e);
 
     boolean onLongPress(MotionEvent event);
