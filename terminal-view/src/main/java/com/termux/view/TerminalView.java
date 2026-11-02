@@ -90,6 +90,14 @@ public final class TerminalView extends View {
     int mCombiningAccent;
 
     /**
+     * The currently active {@link BaseInputConnection} created in
+     * {@link #onCreateInputConnection(EditorInfo)}, or {@code null} if none has been created yet.
+     * Used to reach the local {@link Editable} that holds in-progress IME composing text, which
+     * must be committed before input that bypasses the IME is written to the terminal.
+     */
+    private BaseInputConnection mInputConnection;
+
+    /**
      * The cursor update mode last requested by the IME via
      * {@link InputConnection#requestCursorUpdates(int)}. A non-zero
      * {@link InputConnection#CURSOR_UPDATE_MONITOR} means that the cursor anchor info must be kept
@@ -335,7 +343,11 @@ public final class TerminalView extends View {
                 // selection, provide full composition and candidate UI. The composing text is kept
                 // in the local editable of the input connection below and is only sent to the
                 // terminal once it is committed, so no partial text reaches the terminal.
-                outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
+                // NO_SUGGESTIONS keeps the IME from showing its autocorrect/suggestion strip, which
+                // does not apply to terminal input, but leaves composing and the CJK candidate bar
+                // alone. A visible password field would suppress suggestions too, but it disables
+                // composing as well, which breaks CJK input.
+                outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
             } else if (keyboardMode == TerminalViewClient.KEYBOARD_MODE_SECURE) {
                 // Some keyboards seems do not reset the internal state on TYPE_NULL.
                 // Affects mostly Samsung stock keyboards.
@@ -366,7 +378,7 @@ public final class TerminalView extends View {
         // the terminal in landscape or large screen mode, where the terminal itself is already big enough.
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
 
-        return new BaseInputConnection(this, true) {
+        mInputConnection = new BaseInputConnection(this, true) {
 
             @Override
             public boolean requestCursorUpdates(int cursorUpdateMode) {
@@ -472,6 +484,28 @@ public final class TerminalView extends View {
             }
 
         };
+        return mInputConnection;
+    }
+
+    /**
+     * Commit any in-progress IME composing text before input that bypasses the IME is written to the
+     * terminal, so that it is not committed after that input. Called from
+     * {@link #onKeyDown(int, KeyEvent)} and {@link #inputCodePoint(int, int, boolean, boolean)}, the
+     * two entry points that do not go through the input connection.
+     *
+     * The composing span is set by {@link BaseInputConnection#setComposingText(CharSequence, int)}
+     * and removed by {@link BaseInputConnection#finishComposingText()}, so it is both the "is
+     * composing" signal and the guard against recursing back here from the
+     * {@link #inputCodePoint(int, int, boolean, boolean)} calls that committing makes.
+     */
+    private void finalizeComposingIfActive() {
+        if (mInputConnection == null) return;
+        final Editable editable = mInputConnection.getEditable();
+        if (BaseInputConnection.getComposingSpanStart(editable) < 0) return;
+        mInputConnection.finishComposingText();
+        // Some IMEs keep the committed text in their own composing buffer, so restart the input
+        // connection to make them drop it.
+        post(this::restartInput);
     }
 
     /**
@@ -863,6 +897,10 @@ public final class TerminalView extends View {
         if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
             mClient.logInfo(LOG_TAG, "onKeyDown(keyCode=" + keyCode + ", isSystem()=" + event.isSystem() + ", event=" + event + ")");
         if (mEmulator == null) return true;
+        // Input from a hardware keyboard or the extra keys bar bypasses the IME, so commit an
+        // in-progress composition first. Modifier keys must not, or pressing shift to compose a CJK
+        // double consonant would commit the syllable in progress.
+        if (!KeyEvent.isModifierKey(keyCode)) finalizeComposingIfActive();
         if (isSelectingText()) {
             stopTextSelectionMode();
         }
@@ -943,6 +981,9 @@ public final class TerminalView extends View {
         }
 
         if (mTermSession == null) return;
+
+        // Same as onKeyDown(), for input that does not go through a key event, like the extra keys bar.
+        finalizeComposingIfActive();
 
         // Ensure cursor is shown when a key is pressed down like long hold on (arrow) keys
         if (mEmulator != null)
