@@ -32,6 +32,7 @@ import android.view.autofill.AutofillValue;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Scroller;
 
 import androidx.annotation.Nullable;
@@ -1524,6 +1525,17 @@ public final class TerminalView extends View {
                     showFloatingToolbar();
             }
         }
+    }
+
+    /**
+     * Restart the input connection so that the attributes returned by
+     * {@link #onCreateInputConnection(EditorInfo)}, like the {@code inputType} defined by
+     * {@link TerminalViewClient#getKeyboardMode()}, are reported to the IME again. Must be called
+     * when the keyboard mode is changed.
+     */
+    public void restartInput() {
+        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.restartInput(this);
     }
 
 }

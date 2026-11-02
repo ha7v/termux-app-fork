@@ -258,4 +258,20 @@ public class TermuxAppSharedPreferences extends AppSharedPreferences {
         SharedPreferenceUtils.setBoolean(mSharedPreferences, TERMUX_APP.KEY_CRASH_REPORT_NOTIFICATIONS_ENABLED, value, false);
     }
 
+    public String getKeyboardMode() {
+        return SharedPreferenceUtils.getString(mSharedPreferences, TERMUX_APP.KEY_KEYBOARD_MODE, TERMUX_APP.DEFAULT_VALUE_KEY_KEYBOARD_MODE, true);
+    }
+
+    public void setKeyboardMode(String value) {
+        SharedPreferenceUtils.setString(mSharedPreferences, TERMUX_APP.KEY_KEYBOARD_MODE, value, false);
+    }
+
+    /**
+     * Whether the user has explicitly set the keyboard mode preference. If not, then the legacy
+     * `enforce-char-based-input` property defines the mode instead.
+     */
+    public boolean isKeyboardModeSet() {
+        return mSharedPreferences != null && mSharedPreferences.contains(TERMUX_APP.KEY_KEYBOARD_MODE);
+    }
+
 }

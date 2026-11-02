@@ -4,6 +4,14 @@
         app:key="keyboard"
         app:title="@string/termux_keyboard_header">
 
+        <ListPreference
+            app:key="keyboard_mode"
+            app:title="@string/termux_keyboard_mode_title"
+            app:entries="@array/keyboard_mode_entries"
+            app:entryValues="@array/keyboard_mode_entry_values"
+            app:defaultValue="standard"
+            app:useSimpleSummaryProvider="true" />
+
         <SwitchPreferenceCompat
             app:key="soft_keyboard_enabled"
             app:summaryOff="@string/termux_soft_keyboard_enabled_off"

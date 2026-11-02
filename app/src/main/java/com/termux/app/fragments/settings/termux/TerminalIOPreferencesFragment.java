@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Bundle;
 
 import androidx.annotation.Keep;
+import androidx.annotation.Nullable;
 import androidx.preference.PreferenceDataStore;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.preference.PreferenceManager;
@@ -76,6 +77,35 @@ class TerminalIOPreferencesDataStore extends PreferenceDataStore {
                 return mPreferences.isSoftKeyboardEnabledOnlyIfNoHardware();
             default:
                 return false;
+        }
+    }
+
+    @Override
+    public void putString(String key, @Nullable String value) {
+        if (mPreferences == null) return;
+        if (key == null) return;
+
+        switch (key) {
+            case "keyboard_mode":
+                if (value != null) {
+                    mPreferences.setKeyboardMode(value);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    @Nullable
+    @Override
+    public String getString(String key, @Nullable String defValue) {
+        if (mPreferences == null) return defValue;
+
+        switch (key) {
+            case "keyboard_mode":
+                return mPreferences.getKeyboardMode();
+            default:
+                return defValue;
         }
     }
 

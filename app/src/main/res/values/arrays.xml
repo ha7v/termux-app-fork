@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The input type reported to the IME, see `TerminalViewClient#getKeyboardMode()`. -->
+    <string-array name="keyboard_mode_entries">
+        <item>Standard</item>
+        <item>IME (CJK input)</item>
+        <item>Secure (no suggestions)</item>
+    </string-array>
+
+    <string-array name="keyboard_mode_entry_values">
+        <item>standard</item>
+        <item>ime</item>
+        <item>secure</item>
+    </string-array>
+</resources>

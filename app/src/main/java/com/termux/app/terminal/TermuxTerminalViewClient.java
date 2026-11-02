@@ -33,6 +33,8 @@ import com.termux.shared.models.ReportInfo;
 import com.termux.app.models.UserAction;
 import com.termux.app.terminal.io.KeyboardShortcut;
 import com.termux.shared.termux.settings.properties.TermuxPropertyConstants;
+import com.termux.shared.termux.settings.preferences.TermuxAppSharedPreferences;
+import com.termux.shared.termux.settings.preferences.TermuxPreferenceConstants;
 import com.termux.shared.data.DataUtils;
 import com.termux.shared.logger.Logger;
 import com.termux.shared.markdown.MarkdownUtils;
@@ -123,6 +125,10 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
             setTerminalCursorBlinkerState(true);
             mTerminalCursorBlinkerStateAlreadySet = true;
         }
+
+        // The keyboard mode may have been changed in the settings, restart the input connection so
+        // that the new `inputType` is reported to the IME.
+        mActivity.getTerminalView().restartInput();
     }
 
     /**
@@ -214,6 +220,25 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
     @Override
     public boolean shouldEnforceCharBasedInput() {
         return mActivity.getProperties().isEnforcingCharBasedInput();
+    }
+
+    @Override
+    public int getKeyboardMode() {
+        TermuxAppSharedPreferences preferences = mActivity.getPreferences();
+
+        // An explicitly set preference wins, so that the mode shown in the settings is the mode that
+        // is actually used. The `enforce-char-based-input` property is only used as the fallback for
+        // users that have set it and have not touched the preference.
+        if (preferences != null && preferences.isKeyboardModeSet()) {
+            String keyboardMode = preferences.getKeyboardMode();
+            if (TermuxPreferenceConstants.TERMUX_APP.VALUE_KEYBOARD_MODE_IME.equals(keyboardMode))
+                return KEYBOARD_MODE_IME;
+            if (TermuxPreferenceConstants.TERMUX_APP.VALUE_KEYBOARD_MODE_SECURE.equals(keyboardMode))
+                return KEYBOARD_MODE_SECURE;
+            return KEYBOARD_MODE_STANDARD;
+        }
+
+        return shouldEnforceCharBasedInput() ? KEYBOARD_MODE_SECURE : KEYBOARD_MODE_STANDARD;
     }
 
     @Override

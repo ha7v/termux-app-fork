@@ -176,6 +176,9 @@
             <!-- Keyboard Category -->
             <string name="termux_keyboard_header">Keyboard</string>
 
+                <!-- Keyboard Mode -->
+                <string name="termux_keyboard_mode_title">Keyboard Mode</string>
+
                 <!-- Soft Keyboard -->
                 <string name="termux_soft_keyboard_enabled_title">Soft Keyboard Enabled</string>
                 <string name="termux_soft_keyboard_enabled_off">Soft keyboard will be disabled.</string>

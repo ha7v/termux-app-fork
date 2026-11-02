@@ -117,6 +117,15 @@ public final class TermuxPreferenceConstants {
         public static final String KEY_SOFT_KEYBOARD_ENABLED_ONLY_IF_NO_HARDWARE = "soft_keyboard_enabled_only_if_no_hardware";
         public static final boolean DEFAULT_VALUE_KEY_SOFT_KEYBOARD_ENABLED_ONLY_IF_NO_HARDWARE = false;
 
+        /**
+         * Defines the key for keyboard mode: 'standard', 'ime', or 'secure'.
+         */
+        public static final String KEY_KEYBOARD_MODE = "keyboard_mode";
+        public static final String VALUE_KEYBOARD_MODE_STANDARD = "standard";
+        public static final String VALUE_KEYBOARD_MODE_IME = "ime";
+        public static final String VALUE_KEYBOARD_MODE_SECURE = "secure";
+        public static final String DEFAULT_VALUE_KEY_KEYBOARD_MODE = VALUE_KEYBOARD_MODE_STANDARD;
+
 
         /**
          * Defines the key for whether to always keep screen on.
