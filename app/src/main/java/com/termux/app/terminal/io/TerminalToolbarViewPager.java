@@ -74,8 +74,14 @@ public class TerminalToolbarViewPager {
                     if (session != null) {
                         if (session.isRunning()) {
                             String textToSend = editText.getText().toString();
-                            if (textToSend.length() == 0) textToSend = "\r";
-                            session.write(textToSend);
+                            if (textToSend.length() == 0) {
+                                // The empty input is the enter key.
+                                session.write("\r");
+                            } else {
+                                // Send the text as a paste like the other paste paths do, so that
+                                // programs that enabled bracketed paste mode receive it in one go.
+                                session.getEmulator().paste(textToSend);
+                            }
                         } else {
                             mActivity.getTermuxTerminalSessionClient().removeFinishedSession(session);
                         }
