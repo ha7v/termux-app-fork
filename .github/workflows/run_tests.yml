@@ -1,10 +1,12 @@
 name: Unit tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
       - android-10
+      - dev
   pull_request:
     branches:
       - master
