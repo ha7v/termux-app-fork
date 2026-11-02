@@ -60,6 +60,17 @@ public interface TerminalViewClient {
 
     boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession session);
 
+    /**
+     * Called from {@link TerminalView#onKeyDown(int, KeyEvent)} when a key is pressed while text is
+     * selected, before the selection is cleared, so that the client can act on the selected text.
+     *
+     * @return {@code true} if the key was consumed, otherwise {@code false} to let the selection be
+     * cleared and the key be processed as usual.
+     */
+    default boolean onKeyDownWhileSelectingText(int keyCode, KeyEvent e) {
+        return false;
+    }
+
     boolean onKeyUp(int keyCode, KeyEvent e);
 
     boolean onLongPress(MotionEvent event);

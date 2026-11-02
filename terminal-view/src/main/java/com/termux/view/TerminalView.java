@@ -902,6 +902,12 @@ public final class TerminalView extends View {
         // double consonant would commit the syllable in progress.
         if (!KeyEvent.isModifierKey(keyCode)) finalizeComposingIfActive();
         if (isSelectingText()) {
+            // The client gets the key before the selection is cleared below, so that it can act on
+            // the selected text, like copying it on Ctrl+C.
+            if (mClient.onKeyDownWhileSelectingText(keyCode, event)) {
+                invalidate();
+                return true;
+            }
             stopTextSelectionMode();
         }
 
