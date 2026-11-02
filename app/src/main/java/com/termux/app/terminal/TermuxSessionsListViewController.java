@@ -16,13 +16,10 @@ import android.widget.ArrayAdapter;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
-import androidx.core.content.ContextCompat;
 
 import com.termux.R;
 import com.termux.app.TermuxActivity;
 import com.termux.shared.termux.shell.command.runner.terminal.TermuxSession;
-import com.termux.shared.theme.NightMode;
-import com.termux.shared.theme.ThemeUtils;
 import com.termux.terminal.TerminalSession;
 
 import java.util.List;
@@ -31,12 +28,26 @@ public class TermuxSessionsListViewController extends ArrayAdapter<TermuxSession
 
     final TermuxActivity mActivity;
 
+    /**
+     * The color of the title of a running session. Set from the terminal foreground color, since the
+     * drawer uses the terminal colors instead of the app day/night theme, so that the session titles
+     * stay readable whatever the terminal background color is.
+     */
+    private int mTextColor = Color.WHITE;
+
     final StyleSpan boldSpan = new StyleSpan(Typeface.BOLD);
     final StyleSpan italicSpan = new StyleSpan(Typeface.ITALIC);
 
     public TermuxSessionsListViewController(TermuxActivity activity, List<TermuxSession> sessionList) {
         super(activity.getApplicationContext(), R.layout.item_terminal_sessions_list, sessionList);
         this.mActivity = activity;
+    }
+
+    /** Set the color of the title of a running session and redraw the list. */
+    public void setTextColor(int textColor) {
+        if (mTextColor == textColor) return;
+        mTextColor = textColor;
+        notifyDataSetChanged();
     }
 
     @SuppressLint("SetTextI18n")
@@ -55,14 +66,6 @@ public class TermuxSessionsListViewController extends ArrayAdapter<TermuxSession
         if (sessionAtRow == null) {
             sessionTitleView.setText("null session");
             return sessionRowView;
-        }
-
-        boolean shouldEnableDarkTheme = ThemeUtils.shouldEnableDarkTheme(mActivity, NightMode.getAppNightMode().getName());
-
-        if (shouldEnableDarkTheme) {
-            sessionTitleView.setBackground(
-                ContextCompat.getDrawable(mActivity, R.drawable.session_background_black_selected)
-            );
         }
 
         String name = sessionAtRow.mSessionName;
@@ -86,8 +89,7 @@ public class TermuxSessionsListViewController extends ArrayAdapter<TermuxSession
         } else {
             sessionTitleView.setPaintFlags(sessionTitleView.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
         }
-        int defaultColor = shouldEnableDarkTheme ? Color.WHITE : Color.BLACK;
-        int color = sessionRunning || sessionAtRow.getExitStatus() == 0 ? defaultColor : Color.RED;
+        int color = sessionRunning || sessionAtRow.getExitStatus() == 0 ? mTextColor : Color.RED;
         sessionTitleView.setTextColor(color);
         return sessionRowView;
     }

@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    The background of the current session in the drawer. Translucent, so that it works with both
+    light and dark terminal background colors, which the drawer uses instead of the app theme.
+-->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="#E0E0E0" />
+    <solid android:color="#33808080" />
 </shape>

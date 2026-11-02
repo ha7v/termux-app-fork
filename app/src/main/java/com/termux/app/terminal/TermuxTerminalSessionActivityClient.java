@@ -524,6 +524,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
             int[] colors = session.getEmulator().mColors.mCurrentColors;
             mActivity.getWindow().getDecorView().setBackgroundColor(colors[TextStyle.COLOR_INDEX_BACKGROUND]);
             mActivity.updateTerminalToolbarTextColor(colors[TextStyle.COLOR_INDEX_FOREGROUND]);
+            mActivity.updateTerminalDrawerColors(colors[TextStyle.COLOR_INDEX_BACKGROUND], colors[TextStyle.COLOR_INDEX_FOREGROUND]);
         }
     }
 

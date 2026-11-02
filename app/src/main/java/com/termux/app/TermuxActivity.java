@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
+import android.content.res.ColorStateList;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -20,6 +21,7 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ListView;
@@ -873,6 +875,31 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         EditText textInput = findViewById(R.id.terminal_toolbar_text_input);
         if (textInput != null)
             textInput.setTextColor(textColor);
+    }
+
+    /**
+     * Use the terminal background and foreground colors for the session drawer, so that it matches
+     * the terminal color scheme instead of the app day/night theme. The rows of the session list are
+     * transparent, so that the terminal background color shows through everywhere in the drawer.
+     */
+    public void updateTerminalDrawerColors(int backgroundColor, int textColor) {
+        View drawer = findViewById(R.id.left_drawer);
+        if (drawer != null) drawer.setBackgroundColor(backgroundColor);
+
+        ImageButton settingsButton = findViewById(R.id.settings_button);
+        if (settingsButton != null)
+            settingsButton.setImageTintList(ColorStateList.valueOf(textColor));
+
+        Button toggleKeyboardButton = findViewById(R.id.toggle_keyboard_button);
+        if (toggleKeyboardButton != null)
+            toggleKeyboardButton.setTextColor(textColor);
+
+        Button newSessionButton = findViewById(R.id.new_session_button);
+        if (newSessionButton != null)
+            newSessionButton.setTextColor(textColor);
+
+        if (mTermuxSessionListViewController != null)
+            mTermuxSessionListViewController.setTextColor(textColor);
     }
 
     public boolean isTerminalViewSelected() {
