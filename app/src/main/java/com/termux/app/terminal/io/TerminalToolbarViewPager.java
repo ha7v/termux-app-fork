@@ -12,6 +12,7 @@ import androidx.viewpager.widget.ViewPager;
 import com.termux.R;
 import com.termux.app.TermuxActivity;
 import com.termux.shared.termux.extrakeys.ExtraKeysView;
+import com.termux.shared.view.KeyboardUtils;
 import com.termux.terminal.TerminalSession;
 
 public class TerminalToolbarViewPager {
@@ -111,6 +112,9 @@ public class TerminalToolbarViewPager {
             if (position == 0) {
                 mActivity.getTerminalView().requestFocus();
             } else {
+                // The flags that disable the soft keyboard may be set for the terminal view, but the
+                // text input view can only be typed into if the window is IME focusable.
+                KeyboardUtils.clearDisableSoftKeyboardFlags(mActivity);
                 final EditText editText = mTerminalToolbarViewPager.findViewById(R.id.terminal_toolbar_text_input);
                 if (editText != null) editText.requestFocus();
             }
