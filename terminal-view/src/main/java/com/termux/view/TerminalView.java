@@ -7,6 +7,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Handler;
@@ -30,6 +31,7 @@ import android.view.accessibility.AccessibilityManager;
 import android.view.autofill.AutofillManager;
 import android.view.autofill.AutofillValue;
 import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
@@ -86,6 +88,17 @@ public final class TerminalView extends View {
 
     /** If non-zero, this is the last unicode code point received if that was a combining character. */
     int mCombiningAccent;
+
+    /**
+     * The cursor update mode last requested by the IME via
+     * {@link InputConnection#requestCursorUpdates(int)}. A non-zero
+     * {@link InputConnection#CURSOR_UPDATE_MONITOR} means that the cursor anchor info must be kept
+     * up to date as the terminal content changes.
+     */
+    private int mCursorUpdateMode;
+
+    /** Whether a cursor anchor info update has already been posted for the next frame. */
+    private boolean mCursorAnchorInfoUpdatePending;
 
     /**
      * The current AutoFill type returned for {@link View#getAutofillType()} by {@link #getAutofillType()}.
@@ -308,6 +321,9 @@ public final class TerminalView extends View {
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+        // The IME has to request cursor updates again for the new connection, like TextView does.
+        mCursorUpdateMode = 0;
+
         // Ensure that inputType is only set if TerminalView is selected view with the keyboard and
         // an alternate view is not selected, like an EditText. This is necessary if an activity is
         // initially started with the alternate view or if activity is returned to from another app
@@ -351,6 +367,17 @@ public final class TerminalView extends View {
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
 
         return new BaseInputConnection(this, true) {
+
+            @Override
+            public boolean requestCursorUpdates(int cursorUpdateMode) {
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
+                    mClient.logInfo(LOG_TAG, "IME: requestCursorUpdates(" + cursorUpdateMode + ")");
+                }
+                mCursorUpdateMode = cursorUpdateMode;
+                if ((cursorUpdateMode & InputConnection.CURSOR_UPDATE_IMMEDIATE) != 0)
+                    updateCursorAnchorInfo();
+                return true;
+            }
 
             @Override
             public boolean finishComposingText() {
@@ -447,6 +474,58 @@ public final class TerminalView extends View {
         };
     }
 
+    /**
+     * Report the terminal cursor position and the view coordinates to the IME, so that IME windows
+     * like the candidate bar can be shown next to the terminal cursor instead of at the bottom of the
+     * screen. Only called if the IME requested cursor updates via
+     * {@link InputConnection#requestCursorUpdates(int)}.
+     */
+    private void updateCursorAnchorInfo() {
+        if (mEmulator == null || mRenderer == null) return;
+
+        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm == null) return;
+
+        final int visibleRow = mEmulator.getCursorRow() - mTopRow;
+        CursorAnchorInfo.Builder builder = new CursorAnchorInfo.Builder();
+        if (visibleRow >= 0 && visibleRow < mEmulator.mRows) {
+            // Use the same geometry as `TerminalRenderer`, where the baseline of a row is at
+            // `(row + 1) * mFontLineSpacing` and its cell is `mFontLineSpacing` high and starts at
+            // `mFontLineSpacingAndAscent` above the baseline.
+            final float left = mEmulator.getCursorCol() * mRenderer.mFontWidth;
+            final float top = visibleRow * mRenderer.mFontLineSpacing + mRenderer.mFontLineSpacingAndAscent;
+            final float bottom = top + mRenderer.mFontLineSpacing;
+            final float baseline = (visibleRow + 1) * mRenderer.mFontLineSpacing;
+            builder.setInsertionMarkerLocation(left, top, baseline, bottom, CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION);
+        } else {
+            // The cursor is scrolled out of view, so there is nothing for the IME to anchor to.
+            builder.setInsertionMarkerLocation(0, 0, 0, 0, CursorAnchorInfo.FLAG_HAS_INVISIBLE_REGION);
+        }
+
+        // The IME expects the insertion marker in view local coordinates, so that the matrix maps
+        // them to screen coordinates.
+        Matrix matrix = new Matrix(getMatrix());
+        int[] location = new int[2];
+        getLocationOnScreen(location);
+        matrix.postTranslate(location[0], location[1]);
+        builder.setMatrix(matrix);
+
+        imm.updateCursorAnchorInfo(this, builder.build());
+    }
+
+    /**
+     * Post a cursor anchor info update for the next frame, coalescing the updates of a frame into a
+     * single one, since the terminal content can change many times per frame.
+     */
+    private void scheduleCursorAnchorInfoUpdate() {
+        if (mCursorAnchorInfoUpdatePending) return;
+        mCursorAnchorInfoUpdatePending = true;
+        postOnAnimation(() -> {
+            mCursorAnchorInfoUpdatePending = false;
+            updateCursorAnchorInfo();
+        });
+    }
+
     @Override
     protected int computeVerticalScrollRange() {
         return mEmulator == null ? 1 : mEmulator.getScreen().getActiveRows();
@@ -468,6 +547,9 @@ public final class TerminalView extends View {
 
     public void onScreenUpdated(boolean skipScrolling) {
         if (mEmulator == null) return;
+
+        if ((mCursorUpdateMode & InputConnection.CURSOR_UPDATE_MONITOR) != 0)
+            scheduleCursorAnchorInfoUpdate();
 
         int rowsInHistory = mEmulator.getScreen().getActiveTranscriptRows();
         if (mTopRow < -rowsInHistory) setTopRow(-rowsInHistory);
