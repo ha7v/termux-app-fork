@@ -137,6 +137,13 @@ public final class TermuxPreferenceConstants {
         public static final String VALUE_CTRL_V_PASTE_ALWAYS = "always";
         public static final String DEFAULT_VALUE_KEY_CTRL_V_PASTE = VALUE_CTRL_V_PASTE_BRACKETED;
 
+        /**
+         * Defines the key for the width in dp of the left screen edge that the session drawer can be
+         * dragged open from. A value of 0 disables it.
+         */
+        public static final String KEY_DRAWER_GESTURE_EXCLUSION_WIDTH = "drawer_gesture_exclusion_width";
+        public static final int DEFAULT_VALUE_KEY_DRAWER_GESTURE_EXCLUSION_WIDTH = 20;
+
 
         /**
          * Defines the key for whether to always keep screen on.

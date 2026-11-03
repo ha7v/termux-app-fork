@@ -25,4 +25,21 @@
         <item>bracketed</item>
         <item>always</item>
     </string-array>
+
+    <!-- The width in dp of the left screen edge that the session drawer can be dragged open from. -->
+    <string-array name="drawer_gesture_exclusion_width_entries">
+        <item>Off</item>
+        <item>10 dp</item>
+        <item>20 dp</item>
+        <item>30 dp</item>
+        <item>40 dp</item>
+    </string-array>
+
+    <string-array name="drawer_gesture_exclusion_width_entry_values">
+        <item>0</item>
+        <item>10</item>
+        <item>20</item>
+        <item>30</item>
+        <item>40</item>
+    </string-array>
 </resources>

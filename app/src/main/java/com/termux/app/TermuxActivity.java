@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.res.ColorStateList;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -64,10 +65,12 @@ import com.termux.view.TerminalViewClient;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.ViewCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.viewpager.widget.ViewPager;
 
 import java.util.Arrays;
+import java.util.Collections;
 
 /**
  * A terminal emulator activity.
@@ -202,6 +205,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     private static final String LOG_TAG = "TermuxActivity";
 
+    /**
+     * The maximum total height of the system gesture exclusion rects that the system honours, in dp.
+     * Rects that are taller than this are ignored as a whole, see
+     * https://developer.android.com/develop/ui/views/touch-and-input/gestures/gesturenav
+     */
+    private static final int SYSTEM_GESTURE_EXCLUSION_MAX_HEIGHT_DP = 200;
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         Logger.logDebug(LOG_TAG, "onCreate");
@@ -231,6 +241,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mIsInvalidState = true;
             return;
         }
+
+        setDrawerGestureExclusion();
 
         setMargins();
 
@@ -322,6 +334,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         if (mTermuxTerminalViewClient != null)
             mTermuxTerminalViewClient.onResume();
+
+        // The drawer gesture exclusion width may have been changed in the settings.
+        DrawerLayout drawerLayout = getDrawer();
+        if (drawerLayout != null) updateDrawerGestureExclusion(drawerLayout);
 
         // Check if a crash happened on last run of the app or if a plugin crashed and show a
         // notification with the crash details if it did
@@ -843,6 +859,50 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     public DrawerLayout getDrawer() {
         return (DrawerLayout) findViewById(R.id.drawer_layout);
+    }
+
+    /**
+     * Let the session drawer be dragged open from the left edge of the screen. Since Android 10 the
+     * system back gesture takes a swipe that starts at the edge of the screen, which makes the drawer
+     * almost impossible to open, see https://github.com/termux/termux-app/issues/1325.
+     *
+     * The excluded width is configurable and defaults to the 20dp edge that the {@link DrawerLayout}
+     * drag helper tracks, so that there is no dead zone between the two gestures. The back gesture is
+     * still available from the right edge of the screen and from the left edge above the excluded
+     * band.
+     */
+    private void setDrawerGestureExclusion() {
+        DrawerLayout drawerLayout = getDrawer();
+        if (drawerLayout == null) return;
+
+        // The rects have to be updated whenever the size of the view changes, like on rotation, and
+        // the first one is only known after the view has been laid out.
+        drawerLayout.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+            updateDrawerGestureExclusion(v));
+        updateDrawerGestureExclusion(drawerLayout);
+    }
+
+    /**
+     * Exclude the configured width of the left screen edge from the system gestures. Also called on
+     * resume, so that a changed preference is applied when the user comes back from the settings.
+     */
+    private void updateDrawerGestureExclusion(View drawerLayout) {
+        if (mPreferences == null) return;
+
+        final int exclusionWidth = (int) (mPreferences.getDrawerGestureExclusionWidth() * getResources().getDisplayMetrics().density);
+        if (exclusionWidth <= 0) {
+            ViewCompat.setSystemGestureExclusionRects(drawerLayout, Collections.emptyList());
+            return;
+        }
+
+        // The system ignores the rects as a whole when they are taller than the limit, so the bottom
+        // band of the left edge is excluded instead of the whole edge, which is where the thumb
+        // reaches for the drawer anyway. Since the band is measured from the height of the view, it
+        // stays reachable above the soft keyboard.
+        final int exclusionMaxHeight = (int) (SYSTEM_GESTURE_EXCLUSION_MAX_HEIGHT_DP * getResources().getDisplayMetrics().density);
+        final int height = drawerLayout.getHeight();
+        ViewCompat.setSystemGestureExclusionRects(drawerLayout, Collections.singletonList(
+            new Rect(0, Math.max(0, height - exclusionMaxHeight), exclusionWidth, height)));
     }
 
 

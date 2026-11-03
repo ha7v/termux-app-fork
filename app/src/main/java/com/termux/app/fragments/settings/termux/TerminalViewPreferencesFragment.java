@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Bundle;
 
 import androidx.annotation.Keep;
+import androidx.annotation.Nullable;
 import androidx.preference.PreferenceDataStore;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.preference.PreferenceManager;
@@ -71,6 +72,35 @@ class TerminalViewPreferencesDataStore extends PreferenceDataStore {
                 return mPreferences.isTerminalMarginAdjustmentEnabled();
             default:
                 return false;
+        }
+    }
+
+    @Override
+    public void putString(String key, @Nullable String value) {
+        if (mPreferences == null) return;
+        if (key == null) return;
+
+        switch (key) {
+            case "drawer_gesture_exclusion_width":
+                if (value != null) {
+                    mPreferences.setDrawerGestureExclusionWidth(Integer.parseInt(value));
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    @Nullable
+    @Override
+    public String getString(String key, @Nullable String defValue) {
+        if (mPreferences == null) return defValue;
+
+        switch (key) {
+            case "drawer_gesture_exclusion_width":
+                return Integer.toString(mPreferences.getDrawerGestureExclusionWidth());
+            default:
+                return defValue;
         }
     }
 

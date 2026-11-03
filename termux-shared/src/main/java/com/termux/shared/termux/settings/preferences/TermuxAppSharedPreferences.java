@@ -282,4 +282,13 @@ public class TermuxAppSharedPreferences extends AppSharedPreferences {
         SharedPreferenceUtils.setString(mSharedPreferences, TERMUX_APP.KEY_CTRL_V_PASTE, value, false);
     }
 
+    /** The width in dp of the left screen edge that the session drawer can be dragged open from. */
+    public int getDrawerGestureExclusionWidth() {
+        return SharedPreferenceUtils.getIntStoredAsString(mSharedPreferences, TERMUX_APP.KEY_DRAWER_GESTURE_EXCLUSION_WIDTH, TERMUX_APP.DEFAULT_VALUE_KEY_DRAWER_GESTURE_EXCLUSION_WIDTH);
+    }
+
+    public void setDrawerGestureExclusionWidth(int value) {
+        SharedPreferenceUtils.setIntStoredAsString(mSharedPreferences, TERMUX_APP.KEY_DRAWER_GESTURE_EXCLUSION_WIDTH, value, false);
+    }
+
 }

@@ -10,6 +10,14 @@
             app:summaryOn="@string/termux_terminal_view_terminal_margin_adjustment_on"
             app:title="@string/termux_terminal_view_terminal_margin_adjustment_title" />
 
+        <ListPreference
+            app:key="drawer_gesture_exclusion_width"
+            app:title="@string/termux_terminal_view_drawer_gesture_exclusion_width_title"
+            app:entries="@array/drawer_gesture_exclusion_width_entries"
+            app:entryValues="@array/drawer_gesture_exclusion_width_entry_values"
+            app:defaultValue="20"
+            app:useSimpleSummaryProvider="true" />
+
     </PreferenceCategory>
 
 </PreferenceScreen>

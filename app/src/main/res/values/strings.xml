@@ -213,6 +213,9 @@
                     It should be enabled to try to fix the issue where soft keyboard covers part of extra keys/terminal view.
                     If it causes screen flickering on your devices, then disable it. (Default)</string>
 
+                <!-- Drawer Gesture Exclusion Width -->
+                <string name="termux_terminal_view_drawer_gesture_exclusion_width_title">Drawer Edge Gesture Width</string>
+
 
 
     <!-- Termux:API App Preferences -->
