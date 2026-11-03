@@ -644,6 +644,14 @@ public final class TerminalEmulator {
     public boolean isCursorEnabled() {
         return isDecsetInternalBitSet(DECSET_BIT_CURSOR_ENABLED);
     }
+
+    /**
+     * Whether the running application enabled bracketed paste mode (DECSET 2004), which is how it
+     * announces that it accepts pastes and wants them to be wrapped in `CSI 200 ~` and `CSI 201 ~`.
+     */
+    public boolean isBracketedPasteEnabled() {
+        return isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
+    }
     public boolean shouldCursorBeVisible() {
         if (!isCursorEnabled())
             return false;
@@ -3591,7 +3599,7 @@ public final class TerminalEmulator {
         text = text.replaceAll("\r?\n", "\r");
 
         // Then: Implement bracketed paste mode if enabled:
-        boolean bracketed = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
+        boolean bracketed = isBracketedPasteEnabled();
         if (bracketed) mSession.write("\033[200~");
         mSession.write(text);
         if (bracketed) mSession.write("\033[201~");

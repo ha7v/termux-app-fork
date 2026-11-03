@@ -26,4 +26,18 @@
 
     </PreferenceCategory>
 
+    <PreferenceCategory
+        app:key="clipboard"
+        app:title="@string/termux_clipboard_header">
+
+        <ListPreference
+            app:key="ctrl_v_paste"
+            app:title="@string/termux_ctrl_v_paste_title"
+            app:entries="@array/ctrl_v_paste_entries"
+            app:entryValues="@array/ctrl_v_paste_entry_values"
+            app:defaultValue="bracketed"
+            app:useSimpleSummaryProvider="true" />
+
+    </PreferenceCategory>
+
 </PreferenceScreen>

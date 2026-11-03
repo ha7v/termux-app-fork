@@ -91,6 +91,11 @@ class TerminalIOPreferencesDataStore extends PreferenceDataStore {
                     mPreferences.setKeyboardMode(value);
                 }
                 break;
+            case "ctrl_v_paste":
+                if (value != null) {
+                    mPreferences.setCtrlVPasteMode(value);
+                }
+                break;
             default:
                 break;
         }
@@ -104,6 +109,8 @@ class TerminalIOPreferencesDataStore extends PreferenceDataStore {
         switch (key) {
             case "keyboard_mode":
                 return mPreferences.getKeyboardMode();
+            case "ctrl_v_paste":
+                return mPreferences.getCtrlVPasteMode();
             default:
                 return defValue;
         }

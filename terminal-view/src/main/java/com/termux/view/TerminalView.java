@@ -1546,6 +1546,19 @@ public final class TerminalView extends View {
             return null;
     }
 
+    /**
+     * Copy the selected text to the clipboard and stop selecting, like the Copy action of the
+     * selection menu does.
+     *
+     * @return {@code true} if text was selected, otherwise {@code false}.
+     */
+    public boolean copySelectionToClipboard() {
+        if (!isSelectingText()) return false;
+        mTermSession.onCopyTextToClipboard(getSelectedText());
+        stopTextSelectionMode();
+        return true;
+    }
+
     /** Get the selected text stored before "MORE" button was pressed on the context menu. */
     @Nullable
     public String getStoredSelectedText() {

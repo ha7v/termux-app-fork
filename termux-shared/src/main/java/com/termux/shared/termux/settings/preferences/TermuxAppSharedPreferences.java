@@ -274,4 +274,12 @@ public class TermuxAppSharedPreferences extends AppSharedPreferences {
         return mSharedPreferences != null && mSharedPreferences.contains(TERMUX_APP.KEY_KEYBOARD_MODE);
     }
 
+    public String getCtrlVPasteMode() {
+        return SharedPreferenceUtils.getString(mSharedPreferences, TERMUX_APP.KEY_CTRL_V_PASTE, TERMUX_APP.DEFAULT_VALUE_KEY_CTRL_V_PASTE, true);
+    }
+
+    public void setCtrlVPasteMode(String value) {
+        SharedPreferenceUtils.setString(mSharedPreferences, TERMUX_APP.KEY_CTRL_V_PASTE, value, false);
+    }
+
 }

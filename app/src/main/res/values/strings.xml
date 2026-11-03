@@ -192,6 +192,13 @@
                     no hardware keyboard is connected.</string>
 
 
+            <!-- Clipboard Category -->
+            <string name="termux_clipboard_header">Clipboard</string>
+
+                <!-- Ctrl+V Paste -->
+                <string name="termux_ctrl_v_paste_title">Ctrl+V Paste</string>
+
+
         <!-- Terminal View Preferences -->
         <string name="termux_terminal_view_preferences_title">Terminal View</string>
         <string name="termux_terminal_view_preferences_summary">Preferences for terminal view</string>

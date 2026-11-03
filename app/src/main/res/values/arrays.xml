@@ -12,4 +12,17 @@
         <item>ime</item>
         <item>secure</item>
     </string-array>
+
+    <!-- What bare `Ctrl+V` does, see `TermuxPreferenceConstants.TERMUX_APP#KEY_CTRL_V_PASTE`. -->
+    <string-array name="ctrl_v_paste_entries">
+        <item>Off</item>
+        <item>Bracketed paste only</item>
+        <item>Always</item>
+    </string-array>
+
+    <string-array name="ctrl_v_paste_entry_values">
+        <item>off</item>
+        <item>bracketed</item>
+        <item>always</item>
+    </string-array>
 </resources>

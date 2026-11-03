@@ -126,6 +126,17 @@ public final class TermuxPreferenceConstants {
         public static final String VALUE_KEYBOARD_MODE_SECURE = "secure";
         public static final String DEFAULT_VALUE_KEY_KEYBOARD_MODE = VALUE_KEYBOARD_MODE_STANDARD;
 
+        /**
+         * Defines the key for what bare `Ctrl+V` does: 'off' sends it to the terminal, 'bracketed'
+         * pastes only if the program enabled bracketed paste mode (DECSET 2004), and 'always' always
+         * pastes. `Ctrl+Shift+V` always pastes, whatever this is set to.
+         */
+        public static final String KEY_CTRL_V_PASTE = "ctrl_v_paste";
+        public static final String VALUE_CTRL_V_PASTE_OFF = "off";
+        public static final String VALUE_CTRL_V_PASTE_BRACKETED = "bracketed";
+        public static final String VALUE_CTRL_V_PASTE_ALWAYS = "always";
+        public static final String DEFAULT_VALUE_KEY_CTRL_V_PASTE = VALUE_CTRL_V_PASTE_BRACKETED;
+
 
         /**
          * Defines the key for whether to always keep screen on.
