@@ -3433,7 +3433,9 @@ public final class TerminalEmulator {
 
         if (autoWrap) {
             if (cursorInLastColumn && ((mAboutToAutoWrap && displayWidth == 1) || displayWidth == 2)) {
-                mScreen.setLineWrap(mCursorRow);
+                // A wide character that does not fit in the last column is moved to the next row, so
+                // nothing is written to the last column and it is not part of the text.
+                mScreen.setLineWrap(mCursorRow, displayWidth == 2 && !mAboutToAutoWrap);
                 mCursorCol = mLeftMargin;
                 if (mCursorRow + 1 < mBottomMargin) {
                     mCursorRow++;

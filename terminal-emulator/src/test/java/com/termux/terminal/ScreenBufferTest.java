@@ -46,6 +46,39 @@ public class ScreenBufferTest extends TerminalTestCase {
 		assertEquals("ABC\nFG", mTerminal.getScreen().getSelectedText(0, 0, 1, 1, true, true));
 	}
 
+	public void testGetSelectedTextKeepsTrailingSpaceOfWrappedLine() {
+		withTerminalSized(5, 3).enterString("ABCD EF");
+		assertEquals("ABCD EF", mTerminal.getSelectedText(0, 0, 4, 1));
+	}
+
+	public void testGetSelectedTextWithWideCharMovedToNextRow() {
+		// A wide character that does not fit in the last column is moved to the next row, leaving the
+		// last column blank although nothing was written to it, so it is not part of the text.
+		withTerminalSized(5, 3).enterString("ABCD中");
+		assertEquals("ABCD中", mTerminal.getSelectedText(0, 0, 4, 1));
+	}
+
+	public void testGetSelectedTextKeepsWrittenSpaceBeforeWideChar() {
+		// The last column holds a space that was written to it, which is part of the text even though
+		// the wide character after it did not fit and was moved to the next row.
+		withTerminalSized(5, 3).enterString("ABCD 中");
+		assertEquals("ABCD 中", mTerminal.getSelectedText(0, 0, 4, 1));
+	}
+
+	public void testGetSelectedTextWithWideCharAfterCursorMovedToLastColumn() {
+		// The last column was written before the cursor was moved back to it, so its character is part
+		// of the text even though the wide character wraps before writing anything.
+		withTerminalSized(5, 3).enterString("ABCDE\033[1;5H中");
+		assertEquals("ABCDE中", mTerminal.getSelectedText(0, 0, 4, 1));
+	}
+
+	public void testGetSelectedTextWithLastColumnWrittenAfterWideCharWrap() {
+		// The last column is written after the wide character wrapped, so its character is part of the
+		// text even though the wrap left the column blank at the time.
+		withTerminalSized(5, 3).enterString("ABCD中\033[1;5HX");
+		assertEquals("ABCDX中", mTerminal.getSelectedText(0, 0, 4, 1));
+	}
+
 	public void testGetWordAtLocation() {
 		withTerminalSized(5, 3).enterString("ABCDEFGHIJ\r\nKLMNO");
 		assertEquals("ABCDEFGHIJKLMNO", mTerminal.getScreen().getWordAtLocation(0, 0));
