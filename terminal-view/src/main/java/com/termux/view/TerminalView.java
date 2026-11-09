@@ -25,6 +25,7 @@ import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewParent;
 import android.view.ViewConfiguration;
 import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityManager;
@@ -791,6 +792,10 @@ public final class TerminalView extends View {
                 mGestureWasSelection = false;
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
+                // Keep the parent (the drawer layout) from cancelling a multi-finger gesture; on some
+                // ROMs its drag helper otherwise sends ACTION_CANCEL as soon as a second finger is
+                // down, which would drop the three-finger tap/swipe before it can be recognised.
+                requestParentDisallowIntercept(true);
                 mMultiFingerTapDetector.onPointerCount(event.getPointerCount());
                 mMultiFingerSwipeDetector.onPointerCount(event.getPointerCount(), centroidX(event), centroidY(event));
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "pointer down, count=" + event.getPointerCount());
@@ -833,14 +838,22 @@ public final class TerminalView extends View {
                     finishTwoFingerSelection();
                 }
                 mTwoFingerSelecting = false;
+                requestParentDisallowIntercept(false);
                 break;
             case MotionEvent.ACTION_CANCEL:
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "touch cancelled");
                 mMultiFingerTapDetector.onCancel();
                 mMultiFingerSwipeDetector.onCancel();
                 if (mForwardedButtonDown) releaseForwardedButton();
                 if (mTwoFingerSelecting) cancelTwoFingerSelection();
+                requestParentDisallowIntercept(false);
                 break;
         }
+    }
+
+    private void requestParentDisallowIntercept(boolean disallow) {
+        ViewParent parent = getParent();
+        if (parent != null) parent.requestDisallowInterceptTouchEvent(disallow);
     }
 
     /** Anchor a two-finger selection at the first finger when the second finger goes down. */
