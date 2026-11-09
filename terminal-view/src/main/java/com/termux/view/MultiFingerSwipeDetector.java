@@ -4,6 +4,9 @@ package com.termux.view;
  * Detects a horizontal swipe performed with an exact number of fingers, used for switching
  * sessions. The input is primitive (pointer count, centroid, delta) so the state machine can be
  * unit tested on the JVM.
+ *
+ * <p>The baseline is captured when the required number of fingers is down, not on the first move,
+ * so that a fast swipe that only produces a single move event is still recognised.
  */
 public final class MultiFingerSwipeDetector {
 
@@ -17,7 +20,7 @@ public final class MultiFingerSwipeDetector {
     private final float mMinHorizontal;
     private final float mMaxVertical;
 
-    private boolean mTracking;
+    private boolean mHasBaseline;
     private boolean mFired;
     private float mBaseX, mBaseY;
 
@@ -29,8 +32,23 @@ public final class MultiFingerSwipeDetector {
 
     /** Start a new gesture, from {@code ACTION_DOWN}. */
     public void onDown() {
-        mTracking = false;
+        mHasBaseline = false;
         mFired = false;
+    }
+
+    /**
+     * Record the centroid when a pointer goes down. The baseline is captured once the required
+     * number of fingers is down, so the first move already has a reference to measure against.
+     */
+    public void onPointerCount(int pointerCount, float centroidX, float centroidY) {
+        if (pointerCount == mPointerCount) {
+            mBaseX = centroidX;
+            mBaseY = centroidY;
+            mHasBaseline = true;
+            mFired = false;
+        } else if (pointerCount > mPointerCount) {
+            mHasBaseline = false;
+        }
     }
 
     /**
@@ -40,19 +58,7 @@ public final class MultiFingerSwipeDetector {
      *         otherwise {@link #SWIPE_NONE}.
      */
     public int onMove(int pointerCount, float centroidX, float centroidY) {
-        if (pointerCount != mPointerCount) {
-            mTracking = false;
-            return SWIPE_NONE;
-        }
-        if (!mTracking) {
-            // The baseline is the centroid when the required number of fingers first moves together.
-            mTracking = true;
-            mFired = false;
-            mBaseX = centroidX;
-            mBaseY = centroidY;
-            return SWIPE_NONE;
-        }
-        if (mFired) return SWIPE_NONE;
+        if (pointerCount != mPointerCount || !mHasBaseline || mFired) return SWIPE_NONE;
 
         int swipe = classify(pointerCount, mPointerCount, centroidX - mBaseX, centroidY - mBaseY,
             mMinHorizontal, mMaxVertical);
@@ -61,7 +67,7 @@ public final class MultiFingerSwipeDetector {
     }
 
     public void onCancel() {
-        mTracking = false;
+        mHasBaseline = false;
         mFired = false;
     }
 
