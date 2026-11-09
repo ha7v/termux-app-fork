@@ -284,6 +284,18 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
         return performClipboardAction(resolveClipboardShortcut(text.charAt(0), controlDown, readShiftKey(), false));
     }
 
+    @Override
+    public boolean onThreeFingerTap() {
+        mActivity.getDrawer().openDrawer(Gravity.LEFT);
+        return true;
+    }
+
+    @Override
+    public boolean onSessionSwipe(boolean forward) {
+        mTermuxTerminalSessionActivityClient.switchToSession(forward);
+        return true;
+    }
+
     @SuppressLint("RtlHardcoded")
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession currentSession) {
