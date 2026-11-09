@@ -684,11 +684,6 @@ public final class TerminalEmulator {
         return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE) || isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT);
     }
 
-    /** Whether the program asked for drag/move events while a button is held (DECSET 1002). */
-    public boolean isMouseTrackingButtonEvent() {
-        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT);
-    }
-
     private void setDefaultTabStops() {
         for (int i = 0; i < mColumns; i++)
             mTabStop[i] = (i & 7) == 0 && i != 0;
