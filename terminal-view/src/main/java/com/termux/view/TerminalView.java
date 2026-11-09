@@ -89,6 +89,14 @@ public final class TerminalView extends View {
     /** What was left in from scrolling movement. */
     float mScrollRemainder;
 
+    /** Whether the current gesture triggered a pinch, so it must not also count as a multi-finger tap. */
+    boolean mGestureWasScale;
+
+    /** Whether a left button press was forwarded to a mouse-aware program and not released yet. */
+    boolean mForwardedButtonDown;
+    /** Last forwarded pointer position, used to release the button on cancel/detach. */
+    float mForwardedX, mForwardedY;
+
     /** If non-zero, this is the last unicode code point received if that was a combining character. */
     int mCombiningAccent;
 
@@ -218,6 +226,7 @@ public final class TerminalView extends View {
             @Override
             public boolean onScale(float focusX, float focusY, float scale) {
                 if (mEmulator == null || isSelectingText()) return true;
+                mGestureWasScale = true;
                 mScaleFactor *= scale;
                 mScaleFactor = mClient.onScale(mScaleFactor);
                 return true;
@@ -264,6 +273,7 @@ public final class TerminalView extends View {
                 // Reset the accumulated pinch factor for each new gesture, otherwise small drifts
                 // across gestures add up and trigger an unwanted zoom.
                 mScaleFactor = 1.f;
+                mGestureWasScale = false;
                 // Why is true not returned here?
                 // https://developer.android.com/training/gestures/detector.html#detect-a-subset-of-supported-gestures
                 // Although setting this to true still does not solve the following errors when long pressing in terminal view text area
@@ -740,12 +750,24 @@ public final class TerminalView extends View {
                 break;
             case MotionEvent.ACTION_UP:
                 int tap = mMultiFingerTapDetector.onUp(event.getEventTime());
-                if (tap != MultiFingerTapDetector.TAP_NONE && !isSelectingText()) handleMultiFingerTap(tap);
+                if (tap != MultiFingerTapDetector.TAP_NONE && !isSelectingText() && !mGestureWasScale)
+                    handleMultiFingerTap(tap);
                 break;
             case MotionEvent.ACTION_CANCEL:
                 mMultiFingerTapDetector.onCancel();
                 break;
         }
+    }
+
+    /**
+     * Release a forwarded left button after a cancelled gesture. If the program stopped accepting
+     * mouse events, sending a release would be typed into the shell as garbage, so it is skipped.
+     */
+    private void releaseForwardedButton() {
+        if (!mForwardedButtonDown) return;
+        mForwardedButtonDown = false;
+        if (mEmulator != null && mEmulator.isMouseTrackingActive())
+            sendMouseEventCodeAt(TerminalEmulator.MOUSE_LEFT_BUTTON, mForwardedX, mForwardedY, false);
     }
 
     private void handleMultiFingerTap(int fingers) {
@@ -826,13 +848,24 @@ public final class TerminalView extends View {
                     }
                 }
             } else if (mEmulator.isMouseTrackingActive()) { // BUTTON_PRIMARY.
-                switch (event.getAction()) {
+                switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                    case MotionEvent.ACTION_UP:
-                        sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, event.getAction() == MotionEvent.ACTION_DOWN);
+                        mForwardedX = event.getX();
+                        mForwardedY = event.getY();
+                        sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, true);
+                        mForwardedButtonDown = true;
                         break;
                     case MotionEvent.ACTION_MOVE:
+                        mForwardedX = event.getX();
+                        mForwardedY = event.getY();
                         sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
+                        break;
+                    case MotionEvent.ACTION_UP:
+                        sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, false);
+                        mForwardedButtonDown = false;
+                        break;
+                    case MotionEvent.ACTION_CANCEL:
+                        releaseForwardedButton();
                         break;
                 }
             }
@@ -1691,6 +1724,9 @@ public final class TerminalView extends View {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
+
+        releaseForwardedButton();
+        mMultiFingerTapDetector.onCancel();
 
         if (mTextSelectionCursorController != null) {
             // Might solve the following exception
