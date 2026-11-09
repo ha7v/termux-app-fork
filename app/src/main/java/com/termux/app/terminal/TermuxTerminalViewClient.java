@@ -179,7 +179,7 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
     @Override
     public float onScale(float scale) {
-        if (scale < 0.9f || scale > 1.1f) {
+        if (scale < 0.85f || scale > 1.15f) {
             boolean increase = scale > 1.f;
             changeFontSize(increase);
             return 1.0f;
