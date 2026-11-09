@@ -94,8 +94,12 @@ public final class TerminalView extends View {
 
     /** Whether a left button press was forwarded to a mouse-aware program and not released yet. */
     boolean mForwardedButtonDown;
+    /** Whether the current gesture forwarded a left drag, so no fling should follow (R7). */
+    boolean mForwardedDragHappened;
     /** Last forwarded pointer position, used to release the button on cancel/detach. */
     float mForwardedX, mForwardedY;
+    /** Finger-down position, the anchor of a forwarded drag (R2). */
+    float mDragDownX, mDragDownY;
 
     /** If non-zero, this is the last unicode code point received if that was a combining character. */
     int mCombiningAccent;
@@ -178,6 +182,13 @@ public final class TerminalView extends View {
             @Override
             public boolean onUp(MotionEvent event) {
                 mScrollRemainder = 0.0f;
+                if (mForwardedButtonDown) {
+                    // Finish a forwarded left drag with a release instead of a quick click (R6).
+                    sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, false);
+                    mForwardedButtonDown = false;
+                    scrolledWithFinger = false;
+                    return true;
+                }
                 // A two/three-finger gesture is a tap (handled by the detector) or a scroll, never a
                 // quick left click, so do not report one when more than one finger was involved.
                 if (mEmulator != null && mEmulator.isMouseTrackingActive() && !event.isFromSource(InputDevice.SOURCE_MOUSE) && !isSelectingText() && !scrolledWithFinger && mMultiFingerTapDetector.getMaxPointerCount() < 2) {
@@ -209,10 +220,28 @@ public final class TerminalView extends View {
                 if (mEmulator == null) return true;
                 if (mEmulator.isMouseTrackingActive() && e.isFromSource(InputDevice.SOURCE_MOUSE)) {
                     // If moving with mouse pointer while pressing button, report that instead of scroll.
-                    // This means that we never report moving with button press-events for touch input,
-                    // since we cannot just start sending these events without a starting press event,
-                    // which we do not do for touch input, only mouse in onTouchEvent().
                     sendMouseEventCode(e, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
+                } else if (e.getPointerCount() >= 2) {
+                    // Two-finger drag scrolls the history / forwards the wheel.
+                    scrolledWithFinger = true;
+                    distanceY += mScrollRemainder;
+                    int deltaRows = (int) (distanceY / mRenderer.mFontLineSpacing);
+                    mScrollRemainder = distanceY - deltaRows * mRenderer.mFontLineSpacing;
+                    doScroll(e, deltaRows);
+                } else if (mEmulator.isMouseTrackingActive()) {
+                    // Single-finger drag in mouse mode. Forward a left drag only when the program asked
+                    // for drag events (1002); otherwise send nothing until the release (R1-R4, R8).
+                    if (mEmulator.isMouseTrackingButtonEvent()) {
+                        if (!mForwardedButtonDown) {
+                            mForwardedButtonDown = true;
+                            mForwardedDragHappened = true;
+                            sendMouseEventCodeAt(TerminalEmulator.MOUSE_LEFT_BUTTON, mDragDownX, mDragDownY, true);
+                        }
+                        mForwardedX = e.getX();
+                        mForwardedY = e.getY();
+                        sendMouseEventCode(e, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
+                        scrolledWithFinger = true;
+                    }
                 } else {
                     scrolledWithFinger = true;
                     distanceY += mScrollRemainder;
@@ -235,6 +264,7 @@ public final class TerminalView extends View {
             @Override
             public boolean onFling(final MotionEvent e2, float velocityX, float velocityY) {
                 if (mEmulator == null) return true;
+                if (mForwardedDragHappened) return true;
                 // Do not start scrolling until last fling has been taken care of:
                 if (!mScroller.isFinished()) return true;
 
@@ -828,6 +858,21 @@ public final class TerminalView extends View {
         final int action = event.getAction();
 
         updateMultiFingerTap(event);
+
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) mForwardedDragHappened = false;
+
+        if (!event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            final int maskedAction = event.getActionMasked();
+            if (maskedAction == MotionEvent.ACTION_DOWN) {
+                mDragDownX = event.getX();
+                mDragDownY = event.getY();
+            } else if (maskedAction == MotionEvent.ACTION_POINTER_DOWN && mForwardedButtonDown) {
+                // A second finger turns the gesture into a two-finger scroll: release the forwarded
+                // drag first, then let onScroll report the wheel (R5).
+                sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, false);
+                mForwardedButtonDown = false;
+            }
+        }
 
         if (isSelectingText()) {
             updateFloatingToolbarVisibility(event);
