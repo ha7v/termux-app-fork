@@ -179,7 +179,7 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
     @Override
     public float onScale(float scale) {
-        if (scale < 0.9f || scale > 1.1f) {
+        if (scale < 0.85f || scale > 1.15f) {
             boolean increase = scale > 1.f;
             changeFontSize(increase);
             return 1.0f;
@@ -282,6 +282,18 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
         if (!controlDown || text.length() != 1) return false;
         if (mActivity.getProperties().areHardwareKeyboardShortcutsDisabled()) return false;
         return performClipboardAction(resolveClipboardShortcut(text.charAt(0), controlDown, readShiftKey(), false));
+    }
+
+    @Override
+    public boolean onThreeFingerTap() {
+        mActivity.getDrawer().openDrawer(Gravity.LEFT);
+        return true;
+    }
+
+    @Override
+    public boolean onSessionSwipe(boolean forward) {
+        mTermuxTerminalSessionActivityClient.switchToSession(forward);
+        return true;
     }
 
     @SuppressLint("RtlHardcoded")

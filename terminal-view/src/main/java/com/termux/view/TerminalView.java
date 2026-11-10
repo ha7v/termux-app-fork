@@ -25,6 +25,7 @@ import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewParent;
 import android.view.ViewConfiguration;
 import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityManager;
@@ -76,6 +77,9 @@ public final class TerminalView extends View {
     float mScaleFactor = 1.f;
     final GestureAndScaleRecognizer mGestureRecognizer;
 
+    /** Detects two/three-finger taps, which the platform GestureDetector does not report. */
+    final MultiFingerTapDetector mMultiFingerTapDetector;
+
     /** Keep track of where mouse touch event started which we report as mouse scroll. */
     private int mMouseScrollStartX = -1, mMouseScrollStartY = -1;
     /** Keep track of the time when a touch event leading to sending mouse scroll events started. */
@@ -85,6 +89,27 @@ public final class TerminalView extends View {
 
     /** What was left in from scrolling movement. */
     float mScrollRemainder;
+
+    /** Whether the current gesture triggered a pinch, so it must not also select or count as a tap. */
+    boolean mGestureWasScale;
+
+    /** Whether a left button press was forwarded to a mouse-aware program and not released yet. */
+    boolean mForwardedButtonDown;
+    /** Last forwarded pointer position, used to release the button on cancel/detach. */
+    float mForwardedX, mForwardedY;
+
+    /** Two-finger selection state: the anchor captured when the second finger goes down. */
+    boolean mTwoFingerSelecting;
+    /** Whether the current two-finger gesture actually moved far enough to start a selection. */
+    boolean mGestureWasSelection;
+    /** Whether the current gesture was a three-finger swipe, so it must not also count as a tap. */
+    boolean mGestureWasSwipe;
+    int mSelAnchorCol, mSelAnchorRow;
+    float mSelBaseCentroidX, mSelBaseCentroidY;
+    float mSelAnchorPxX, mSelAnchorPxY;
+
+    /** Detects a three-finger horizontal swipe for switching sessions. */
+    final MultiFingerSwipeDetector mMultiFingerSwipeDetector;
 
     /** If non-zero, this is the last unicode code point received if that was a combining character. */
     int mCombiningAccent;
@@ -157,6 +182,12 @@ public final class TerminalView extends View {
 
     public TerminalView(Context context, AttributeSet attributes) { // NO_UCD (unused code)
         super(context, attributes);
+        ViewConfiguration viewConfiguration = ViewConfiguration.get(context);
+        final int touchSlop = viewConfiguration.getScaledTouchSlop();
+        // A multi-finger tap is forgiving: a generous slop and duration so a natural two-finger tap
+        // is not rejected for a little movement or a slightly slow lift.
+        mMultiFingerTapDetector = new MultiFingerTapDetector(touchSlop * 4, 1500);
+        mMultiFingerSwipeDetector = new MultiFingerSwipeDetector(3, touchSlop * 3, touchSlop * 4);
         mGestureRecognizer = new GestureAndScaleRecognizer(context, new GestureAndScaleRecognizer.Listener() {
 
             boolean scrolledWithFinger;
@@ -164,7 +195,9 @@ public final class TerminalView extends View {
             @Override
             public boolean onUp(MotionEvent event) {
                 mScrollRemainder = 0.0f;
-                if (mEmulator != null && mEmulator.isMouseTrackingActive() && !event.isFromSource(InputDevice.SOURCE_MOUSE) && !isSelectingText() && !scrolledWithFinger) {
+                // A two/three-finger gesture is a tap (handled by the detector) or a scroll, never a
+                // quick left click, so do not report one when more than one finger was involved.
+                if (mEmulator != null && mEmulator.isMouseTrackingActive() && !event.isFromSource(InputDevice.SOURCE_MOUSE) && !isSelectingText() && !scrolledWithFinger && mMultiFingerTapDetector.getMaxPointerCount() < 2) {
                     // Quick event processing when mouse tracking is active - do not wait for check of double tapping
                     // for zooming.
                     sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, true);
@@ -192,12 +225,29 @@ public final class TerminalView extends View {
             public boolean onScroll(MotionEvent e, float distanceX, float distanceY) {
                 if (mEmulator == null) return true;
                 if (mEmulator.isMouseTrackingActive() && e.isFromSource(InputDevice.SOURCE_MOUSE)) {
-                    // If moving with mouse pointer while pressing button, report that instead of scroll.
-                    // This means that we never report moving with button press-events for touch input,
-                    // since we cannot just start sending these events without a starting press event,
-                    // which we do not do for touch input, only mouse in onTouchEvent().
+                    // Moving a real mouse while its button is pressed.
                     sendMouseEventCode(e, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
-                } else {
+                } else if (e.getPointerCount() == 2) {
+                    // Two-finger pan forwards a mouse drag to mouse-aware programs (like a desktop
+                    // drag, which e.g. msedit uses to select text); in non-mouse programs it selects
+                    // text in the terminal instead. A pinch zooms and does neither.
+                    if (mTwoFingerSelecting && !mGestureWasScale && !mGestureRecognizer.isInProgress()) {
+                        if (mEmulator.isMouseTrackingActive()) {
+                            if (!mForwardedButtonDown) {
+                                mForwardedButtonDown = true;
+                                mForwardedX = mSelAnchorPxX;
+                                mForwardedY = mSelAnchorPxY;
+                                sendMouseEventCodeAt(TerminalEmulator.MOUSE_LEFT_BUTTON, mForwardedX, mForwardedY, true);
+                            }
+                            mForwardedX = e.getX();
+                            mForwardedY = e.getY();
+                            sendMouseEventCode(e, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
+                        } else {
+                            updateDragSelection(e);
+                        }
+                    }
+                } else if (e.getPointerCount() == 1) {
+                    // Single-finger drag scrolls, in every mode.
                     scrolledWithFinger = true;
                     distanceY += mScrollRemainder;
                     int deltaRows = (int) (distanceY / mRenderer.mFontLineSpacing);
@@ -210,6 +260,8 @@ public final class TerminalView extends View {
             @Override
             public boolean onScale(float focusX, float focusY, float scale) {
                 if (mEmulator == null || isSelectingText()) return true;
+                mGestureWasScale = true;
+                if (mTwoFingerSelecting) cancelTwoFingerSelection();
                 mScaleFactor *= scale;
                 mScaleFactor = mClient.onScale(mScaleFactor);
                 return true;
@@ -218,6 +270,8 @@ public final class TerminalView extends View {
             @Override
             public boolean onFling(final MotionEvent e2, float velocityX, float velocityY) {
                 if (mEmulator == null) return true;
+                // A multi-finger gesture is a tap, selection or swipe; it must not fling the view.
+                if (mMultiFingerTapDetector.getMaxPointerCount() >= 2) return true;
                 // Do not start scrolling until last fling has been taken care of:
                 if (!mScroller.isFinished()) return true;
 
@@ -253,6 +307,10 @@ public final class TerminalView extends View {
 
             @Override
             public boolean onDown(float x, float y) {
+                // Reset the accumulated pinch factor for each new gesture, otherwise small drifts
+                // across gestures add up and trigger an unwanted zoom.
+                mScaleFactor = 1.f;
+                mGestureWasScale = false;
                 // Why is true not returned here?
                 // https://developer.android.com/training/gestures/detector.html#detect-a-subset-of-supported-gestures
                 // Although setting this to true still does not solve the following errors when long pressing in terminal view text area
@@ -271,11 +329,12 @@ public final class TerminalView extends View {
             @Override
             public void onLongPress(MotionEvent event) {
                 if (mGestureRecognizer.isInProgress()) return;
+                // A two/three-finger gesture is not a long press.
+                if (mMultiFingerTapDetector.getMaxPointerCount() >= 2) return;
                 if (mClient.onLongPress(event)) return;
-                if (!isSelectingText()) {
-                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-                    startTextSelectionMode(event);
-                }
+                if (isSelectingText()) return;
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                startTextSelectionMode(event);
             }
         });
         mScroller = new Scroller(context);
@@ -704,6 +763,163 @@ public final class TerminalView extends View {
         mEmulator.sendMouseEvent(button, x, y, pressed);
     }
 
+    /** Send a single mouse event at a view-relative pixel position. */
+    void sendMouseEventCodeAt(int button, float x, float y, boolean pressed) {
+        int column = (int) (x / mRenderer.mFontWidth) + 1;
+        int row = (int) ((y - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing) + 1;
+        mEmulator.sendMouseEvent(button, column, row, pressed);
+    }
+
+    /**
+     * Feed the multi-finger gesture detectors. A two-finger pan selects text, a two/three-finger tap
+     * pastes / opens the drawer, and a three-finger horizontal swipe switches sessions.
+     */
+    private void updateMultiFingerGestures(MotionEvent event) {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                mMultiFingerTapDetector.onDown(event.getEventTime(), event.getX(), event.getY());
+                mMultiFingerSwipeDetector.onDown();
+                mTwoFingerSelecting = false;
+                mGestureWasSelection = false;
+                mGestureWasSwipe = false;
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                // Keep the parent (the drawer layout) from cancelling a multi-finger gesture; on some
+                // ROMs its drag helper otherwise sends ACTION_CANCEL as soon as a second finger is
+                // down, which would drop the three-finger tap/swipe before it can be recognised.
+                requestParentDisallowIntercept(true);
+                mMultiFingerTapDetector.onPointerCount(event.getPointerCount());
+                mMultiFingerSwipeDetector.onPointerCount(event.getPointerCount(), centroidX(event), centroidY(event));
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "pointer down, count=" + event.getPointerCount());
+                if (event.getPointerCount() == 2) {
+                    startTwoFingerSelection(event);
+                } else if (mTwoFingerSelecting) {
+                    // A third finger turns this into a three-finger gesture, not a selection.
+                    cancelTwoFingerSelection();
+                }
+                break;
+            case MotionEvent.ACTION_MOVE:
+                mMultiFingerTapDetector.onMove(event.getX(), event.getY());
+                int swipe = mMultiFingerSwipeDetector.onMove(event.getPointerCount(), centroidX(event), centroidY(event));
+                if (swipe != MultiFingerSwipeDetector.SWIPE_NONE) {
+                    mGestureWasSwipe = true;
+                    if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "three-finger swipe " + (swipe == MultiFingerSwipeDetector.SWIPE_RIGHT ? "right" : "left"));
+                    mClient.onSessionSwipe(swipe == MultiFingerSwipeDetector.SWIPE_RIGHT);
+                }
+                break;
+            case MotionEvent.ACTION_POINTER_UP:
+                if (mForwardedButtonDown) {
+                    releaseForwardedButton();
+                } else if (mTwoFingerSelecting) {
+                    if (mGestureWasSelection) finishTwoFingerSelection();
+                    else cancelTwoFingerSelection();
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+                if (mForwardedButtonDown) {
+                    releaseForwardedButton();
+                    mTwoFingerSelecting = false;
+                    requestParentDisallowIntercept(false);
+                    break;
+                }
+                int tap = mMultiFingerTapDetector.onUp(event.getEventTime());
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
+                    mClient.logInfo(LOG_TAG, "up: maxPointers=" + mMultiFingerTapDetector.getMaxPointerCount() + ", tap=" + tap);
+                if (tap != MultiFingerTapDetector.TAP_NONE && !isSelectingText() && !mGestureWasScale && !mGestureWasSwipe) {
+                    if (mTwoFingerSelecting) cancelTwoFingerSelection();
+                    handleMultiFingerTap(tap);
+                } else if (mTwoFingerSelecting && mGestureWasSelection) {
+                    finishTwoFingerSelection();
+                }
+                mTwoFingerSelecting = false;
+                requestParentDisallowIntercept(false);
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "touch cancelled");
+                mMultiFingerTapDetector.onCancel();
+                mMultiFingerSwipeDetector.onCancel();
+                if (mForwardedButtonDown) releaseForwardedButton();
+                if (mTwoFingerSelecting) cancelTwoFingerSelection();
+                requestParentDisallowIntercept(false);
+                break;
+        }
+    }
+
+    private void requestParentDisallowIntercept(boolean disallow) {
+        ViewParent parent = getParent();
+        if (parent != null) parent.requestDisallowInterceptTouchEvent(disallow);
+    }
+
+    /** Anchor a two-finger selection at the first finger when the second finger goes down. */
+    private void startTwoFingerSelection(MotionEvent event) {
+        if (mEmulator == null || mTextSelectionCursorController == null) return;
+        if (mGestureRecognizer.isInProgress()) return;
+        int[] columnAndRow = getColumnAndRow(event, true);
+        mSelAnchorCol = columnAndRow[0];
+        mSelAnchorRow = columnAndRow[1];
+        mSelAnchorPxX = event.getX();
+        mSelAnchorPxY = event.getY();
+        mSelBaseCentroidX = centroidX(event);
+        mSelBaseCentroidY = centroidY(event);
+        mTwoFingerSelecting = true;
+    }
+
+    /** Extend the two-finger selection by the centroid movement since the second finger went down. */
+    private void updateDragSelection(MotionEvent event) {
+        if (mTextSelectionCursorController == null) return;
+        mGestureWasSelection = true;
+        int endCol = mSelAnchorCol + Math.round((centroidX(event) - mSelBaseCentroidX) / mRenderer.mFontWidth);
+        int endRow = mSelAnchorRow + Math.round((centroidY(event) - mSelBaseCentroidY) / mRenderer.mFontLineSpacing);
+        mTextSelectionCursorController.setDragSelection(mSelAnchorCol, mSelAnchorRow, endCol, endRow);
+    }
+
+    private void finishTwoFingerSelection() {
+        mTwoFingerSelecting = false;
+        if (mTextSelectionCursorController != null) {
+            mTextSelectionCursorController.finishDragSelection();
+            // Lock the drawer while the handles are shown, like startTextSelectionMode() does.
+            mClient.copyModeChanged(isSelectingText());
+        }
+    }
+
+    private void cancelTwoFingerSelection() {
+        mTwoFingerSelecting = false;
+        mGestureWasSelection = false;
+        if (mTextSelectionCursorController != null) mTextSelectionCursorController.cancelDragSelection();
+    }
+
+    private static float centroidX(MotionEvent event) {
+        float sum = 0f;
+        for (int i = 0; i < event.getPointerCount(); i++) sum += event.getX(i);
+        return sum / event.getPointerCount();
+    }
+
+    private static float centroidY(MotionEvent event) {
+        float sum = 0f;
+        for (int i = 0; i < event.getPointerCount(); i++) sum += event.getY(i);
+        return sum / event.getPointerCount();
+    }
+
+    /**
+     * Release a forwarded left button after a cancelled gesture. If the program stopped accepting
+     * mouse events, sending a release would be typed into the shell as garbage, so it is skipped.
+     */
+    private void releaseForwardedButton() {
+        if (!mForwardedButtonDown) return;
+        mForwardedButtonDown = false;
+        if (mEmulator != null && mEmulator.isMouseTrackingActive())
+            sendMouseEventCodeAt(TerminalEmulator.MOUSE_LEFT_BUTTON, mForwardedX, mForwardedY, false);
+    }
+
+    private void handleMultiFingerTap(int fingers) {
+        if (fingers == MultiFingerTapDetector.TAP_TWO_FINGERS) {
+            if (mTermSession != null) mTermSession.onPasteTextFromClipboard();
+        } else if (fingers == MultiFingerTapDetector.TAP_THREE_FINGERS) {
+            mClient.onThreeFingerTap();
+        }
+    }
+
     /** Perform a scroll, either from dragging the screen or by scrolling a mouse wheel. */
     void doScroll(MotionEvent event, int rowsDown) {
         boolean up = rowsDown < 0;
@@ -741,6 +957,8 @@ public final class TerminalView extends View {
         if (mEmulator == null) return true;
         final int action = event.getAction();
 
+        updateMultiFingerGestures(event);
+
         if (isSelectingText()) {
             updateFloatingToolbarVisibility(event);
             mGestureRecognizer.onTouchEvent(event);
@@ -760,13 +978,24 @@ public final class TerminalView extends View {
                     }
                 }
             } else if (mEmulator.isMouseTrackingActive()) { // BUTTON_PRIMARY.
-                switch (event.getAction()) {
+                switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                    case MotionEvent.ACTION_UP:
-                        sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, event.getAction() == MotionEvent.ACTION_DOWN);
+                        mForwardedX = event.getX();
+                        mForwardedY = event.getY();
+                        sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, true);
+                        mForwardedButtonDown = true;
                         break;
                     case MotionEvent.ACTION_MOVE:
+                        mForwardedX = event.getX();
+                        mForwardedY = event.getY();
                         sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
+                        break;
+                    case MotionEvent.ACTION_UP:
+                        sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, false);
+                        mForwardedButtonDown = false;
+                        break;
+                    case MotionEvent.ACTION_CANCEL:
+                        releaseForwardedButton();
                         break;
                 }
             }
@@ -1625,6 +1854,12 @@ public final class TerminalView extends View {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
+
+        releaseForwardedButton();
+        mMultiFingerTapDetector.onCancel();
+        mMultiFingerSwipeDetector.onCancel();
+        if (mTwoFingerSelecting) cancelTwoFingerSelection();
+        mGestureWasSwipe = false;
 
         if (mTextSelectionCursorController != null) {
             // Might solve the following exception

@@ -89,8 +89,10 @@ final class GestureAndScaleRecognizer {
     }
 
     public void onTouchEvent(MotionEvent event) {
-        mGestureDetector.onTouchEvent(event);
+        // Run the scale detector first so that a pinch is recognised before the scroll callback, which
+        // decides between two-finger selection and zoom.
         mScaleDetector.onTouchEvent(event);
+        mGestureDetector.onTouchEvent(event);
         switch (event.getAction()) {
             case MotionEvent.ACTION_DOWN:
                 isAfterLongPress = false;

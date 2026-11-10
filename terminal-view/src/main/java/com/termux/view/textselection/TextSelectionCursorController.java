@@ -106,6 +106,56 @@ public class TextSelectionCursorController implements CursorController {
             }
         }
     }
+
+    /**
+     * Set a character-level selection during a two-finger drag, without activating the handles or the
+     * floating toolbar. The highlight is drawn from {@link #getSelectors}, which is read even while
+     * the controller is not active, so the drag does not disturb the touch routing.
+     */
+    public void setDragSelection(int x1, int y1, int x2, int y2) {
+        if (terminalView.mEmulator == null) return;
+        TerminalBuffer screen = terminalView.mEmulator.getScreen();
+        final int minY = -(screen.getActiveRows() - terminalView.mEmulator.mRows);
+        final int maxY = terminalView.mEmulator.mRows - 1;
+        final int maxX = terminalView.mEmulator.mColumns - 1;
+
+        y1 = Math.max(minY, Math.min(y1, maxY));
+        y2 = Math.max(minY, Math.min(y2, maxY));
+        x1 = Math.max(0, Math.min(x1, maxX));
+        x2 = Math.max(0, Math.min(x2, maxX));
+
+        // Normalize so that (x1, y1) is the start of the selection.
+        if (y1 > y2 || (y1 == y2 && x1 > x2)) {
+            int t = x1; x1 = x2; x2 = t;
+            t = y1; y1 = y2; y2 = t;
+        }
+
+        mSelX1 = getValidCurX(screen, y1, x1);
+        mSelY1 = y1;
+        mSelX2 = getValidCurX(screen, y2, x2);
+        mSelY2 = y2;
+        terminalView.invalidate();
+    }
+
+    /** Activate the selection set by {@link #setDragSelection}: show handles and the toolbar. */
+    public void finishDragSelection() {
+        // mSelY1 is negative for a selection that starts in the transcript, so only mSelX1 (always
+        // non-negative after setDragSelection) is a reliable "not set" sentinel.
+        if (mSelX1 < 0) return;
+        mStartHandle.positionAtCursor(mSelX1, mSelY1, true);
+        mEndHandle.positionAtCursor(mSelX2 + 1, mSelY2, true);
+        setActionModeCallBacks();
+        mShowStartTime = System.currentTimeMillis();
+        mIsSelectingText = true;
+        terminalView.invalidate();
+    }
+
+    /** Discard a drag selection that was never activated, e.g. when a pinch starts. */
+    public void cancelDragSelection() {
+        if (mIsSelectingText) return;
+        mSelX1 = mSelY1 = mSelX2 = mSelY2 = -1;
+        terminalView.invalidate();
+    }
     
     public void setActionModeCallBacks() {
         final ActionMode.Callback callback = new ActionMode.Callback() {

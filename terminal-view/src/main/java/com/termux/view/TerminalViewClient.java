@@ -84,6 +84,20 @@ public interface TerminalViewClient {
         return false;
     }
 
+    /** Called on a three-finger tap, used to open the session drawer. */
+    default boolean onThreeFingerTap() {
+        return false;
+    }
+
+    /**
+     * Called on a three-finger horizontal swipe.
+     *
+     * @param forward {@code true} to switch to the next session, {@code false} for the previous one.
+     */
+    default boolean onSessionSwipe(boolean forward) {
+        return false;
+    }
+
     boolean onKeyUp(int keyCode, KeyEvent e);
 
     boolean onLongPress(MotionEvent event);
