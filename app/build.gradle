@@ -243,4 +243,9 @@ afterEvaluate {
     android.applicationVariants.all { variant ->
         variant.javaCompileProvider.get().dependsOn(downloadBootstraps)
     }
+    // The native build embeds the bootstrap zips with .incbin, so it must wait for them to be
+    // downloaded too. javaCompile alone does not order it before buildNdkBuild*.
+    tasks.matching { it.name.startsWith("buildNdkBuild") }.configureEach {
+        dependsOn(downloadBootstraps)
+    }
 }
