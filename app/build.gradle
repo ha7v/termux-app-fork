@@ -91,6 +91,9 @@ android {
             minifyEnabled true
             shrinkResources false // Reproducible builds
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // The repository only ships the shared test key. Sign release with it too, so a release
+            // build can replace a debug build in place (the official GitHub builds use it as well).
+            signingConfig signingConfigs.debug
         }
 
         debug {
