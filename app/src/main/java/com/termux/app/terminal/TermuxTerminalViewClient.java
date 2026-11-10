@@ -44,6 +44,7 @@ import com.termux.shared.view.ViewUtils;
 import com.termux.terminal.KeyHandler;
 import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
+import com.termux.view.ClipboardShortcut;
 import com.termux.view.TerminalView;
 
 import java.util.ArrayList;
@@ -262,17 +263,16 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
 
     /**
-     * Copy the selection instead of letting the terminal send `SIGINT` for `Ctrl+C`, like desktop
-     * terminals do, since the selection menu is not reachable while typing. Called before
-     * {@link TerminalView} clears the selection, which is why it cannot be done in
+     * Handle the desktop clipboard shortcuts while text is selected, instead of letting the terminal
+     * send the raw control character (e.g. `SIGINT` for `Ctrl+C`). Called before {@link TerminalView}
+     * clears the selection, which is why it cannot be done in
      * {@link #onKeyDown(int, KeyEvent, TerminalSession)}.
      */
     @Override
     public boolean onKeyDownWhileSelectingText(int keyCode, KeyEvent e) {
-        return !mActivity.getProperties().areHardwareKeyboardShortcutsDisabled() &&
-            !e.isAltPressed() && e.isCtrlPressed() &&
-            Character.toLowerCase(e.getUnicodeChar(0)) == 'c' &&
-            mActivity.getTerminalView().copySelectionToClipboard();
+        if (mActivity.getProperties().areHardwareKeyboardShortcutsDisabled()) return false;
+        return performClipboardAction(resolveClipboardShortcut(
+            e.getUnicodeChar(0), e.isCtrlPressed(), e.isShiftPressed(), e.isAltPressed()));
     }
 
     @Override
@@ -281,7 +281,7 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
         // can be checked. A paste may also need Shift, so it is read too.
         if (!controlDown || text.length() != 1) return false;
         if (mActivity.getProperties().areHardwareKeyboardShortcutsDisabled()) return false;
-        return onClipboardShortcut(text.charAt(0), readShiftKey());
+        return performClipboardAction(resolveClipboardShortcut(text.charAt(0), controlDown, readShiftKey(), false));
     }
 
     @SuppressLint("RtlHardcoded")
@@ -332,13 +332,15 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
             return true;
         }
 
-        // Paste on `Ctrl+Shift+V` instead of letting the terminal send `SYN` for it, like the
-        // `Ctrl+Alt+V` shortcut above does. This runs before the key is mapped to a control
-        // character below.
+        // Paste on `Ctrl+Shift+V`, and on bare `Ctrl+V` when the preference allows it, instead of
+        // letting the terminal send `SYN`. `Ctrl+Alt+V` is handled above. Copy is handled by
+        // `onKeyDownWhileSelectingText()` before the selection is cleared. This runs before the key
+        // is mapped to a control character below.
         if (!mActivity.getProperties().areHardwareKeyboardShortcutsDisabled() &&
-            !e.isAltPressed() && e.isCtrlPressed() &&
-            Character.toLowerCase(e.getUnicodeChar(0)) == 'v' && onPasteShortcut(e.isShiftPressed()))
+            resolveClipboardShortcut(e.getUnicodeChar(0), e.isCtrlPressed(), e.isShiftPressed(), e.isAltPressed()) == ClipboardShortcut.Action.PASTE) {
+            doPaste();
             return true;
+        }
 
         return false;
 
@@ -418,10 +420,10 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
     @Override
     public boolean onCodePoint(final int codePoint, boolean ctrlDown, TerminalSession session) {
         // The extra keys bar delivers the character of a key instead of a `KeyEvent`, so the clipboard
-        // shortcuts of `onKeyDown()` are handled here for it. Only `c` and `v` are checked, since
-        // reading the sticky `Shift` of the bar clears it.
+        // shortcuts are resolved here for it. Only `c` and `v` are checked, since reading the sticky
+        // `Shift` of the bar clears it.
         if (ctrlDown && (codePoint == 'c' || codePoint == 'C' || codePoint == 'v' || codePoint == 'V') &&
-            onClipboardShortcut(codePoint, readShiftKey()))
+            performClipboardAction(resolveClipboardShortcut(codePoint, ctrlDown, readShiftKey(), false)))
             return true;
 
         if (mVirtualFnKeyDown) {
@@ -888,49 +890,49 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
     }
 
     /**
-     * Paste if the key is a paste shortcut, otherwise leave the key to the terminal. `Ctrl+Shift+V`
-     * always pastes, while bare `Ctrl+V` is left to the terminal unless the `Ctrl+V Paste` setting
-     * says otherwise, since it is a real key combination for some programs, like the block selection
-     * in vim.
-     *
-     * @param shiftDown Whether `Shift` was pressed.
-     * @return {@code true} if the key was consumed.
+     * Resolve what the given key means for the clipboard, using the current selection, the current
+     * session's bracketed paste mode and the {@code Ctrl+V Paste} preference. Centralising the
+     * decision here keeps the hardware keyboard, the extra keys bar, the soft keyboard and the
+     * future touch gestures consistent.
      */
-    private boolean onPasteShortcut(boolean shiftDown) {
-        if (!shiftDown && !shouldPasteOnBareCtrlV()) return false;
-        doPaste();
-        return true;
+    private ClipboardShortcut.Action resolveClipboardShortcut(int codePoint, boolean ctrl, boolean shift, boolean alt) {
+        // Avoid gathering selection/session/preference state for the vast majority of keys.
+        if (!ctrl || alt) return ClipboardShortcut.Action.NONE;
+        TerminalView view = mActivity.getTerminalView();
+        boolean hasSelection = view != null && view.isSelectingText();
+        TerminalSession session = mActivity.getCurrentSession();
+        boolean bracketedPaste = session != null && session.getEmulator() != null &&
+            session.getEmulator().isBracketedPasteEnabled();
+        return ClipboardShortcut.resolve(codePoint, ctrl, shift, alt, hasSelection, bracketedPaste, getBareCtrlVPasteMode());
     }
 
-    /**
-     * Whether bare `Ctrl+V` should paste instead of being sent to the terminal, as defined by the
-     * {@link TermuxPreferenceConstants.TERMUX_APP#KEY_CTRL_V_PASTE} preference.
-     */
-    private boolean shouldPasteOnBareCtrlV() {
+    /** Map the {@link TermuxPreferenceConstants.TERMUX_APP#KEY_CTRL_V_PASTE} preference to the resolver's mode. */
+    private int getBareCtrlVPasteMode() {
         switch (mActivity.getPreferences().getCtrlVPasteMode()) {
             case TermuxPreferenceConstants.TERMUX_APP.VALUE_CTRL_V_PASTE_ALWAYS:
-                return true;
+                return ClipboardShortcut.BARE_CTRL_V_ALWAYS;
             case TermuxPreferenceConstants.TERMUX_APP.VALUE_CTRL_V_PASTE_BRACKETED:
-                TerminalSession session = mActivity.getCurrentSession();
-                return session != null && session.getEmulator() != null && session.getEmulator().isBracketedPasteEnabled();
+                return ClipboardShortcut.BARE_CTRL_V_BRACKETED;
             default:
-                return false;
+                return ClipboardShortcut.BARE_CTRL_V_OFF;
         }
     }
 
     /**
-     * Handle the clipboard shortcuts for a key that arrives as a character instead of a
-     * {@link KeyEvent}, like the keys of the extra keys bar.
+     * Perform a resolved clipboard action.
      *
-     * @param codePoint The unmodified character of the key, like {@code 'v'}.
-     * @param shiftDown Whether `Shift` was pressed.
      * @return {@code true} if the key was consumed.
      */
-    private boolean onClipboardShortcut(int codePoint, boolean shiftDown) {
-        char c = Character.toLowerCase((char) codePoint);
-        if (c == 'c') return mActivity.getTerminalView().copySelectionToClipboard();
-        if (c == 'v') return onPasteShortcut(shiftDown);
-        return false;
+    private boolean performClipboardAction(ClipboardShortcut.Action action) {
+        switch (action) {
+            case COPY:
+                return mActivity.getTerminalView().copySelectionToClipboard();
+            case PASTE:
+                doPaste();
+                return true;
+            default:
+                return false;
+        }
     }
 
 }

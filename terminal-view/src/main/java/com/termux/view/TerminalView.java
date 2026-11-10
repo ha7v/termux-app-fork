@@ -915,7 +915,11 @@ public final class TerminalView extends View {
                 invalidate();
                 return true;
             }
-            stopTextSelectionMode();
+            // Modifier keys do not produce input, so they must not clear the selection. Otherwise
+            // the Ctrl of a hardware Ctrl+C (whose keydown arrives before the C keydown) would clear
+            // the selection before the C key could copy it.
+            if (SelectionKeyPolicy.shouldClearSelection(keyCode, KeyEvent.isModifierKey(keyCode), event.getUnicodeChar(0)))
+                stopTextSelectionMode();
         }
 
         if (mClient.onKeyDown(keyCode, event, mTermSession)) {
