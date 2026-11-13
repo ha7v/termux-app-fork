@@ -39,6 +39,8 @@ public final class TerminalEmulator {
 
     /** Mouse moving while having left mouse button pressed. */
     public static final int MOUSE_LEFT_BUTTON_MOVED = 32;
+    /** Mouse moving without any button pressed (DECSET 1003 any-event tracking). */
+    public static final int MOUSE_MOTION_NO_BUTTON = 35;
     public static final int MOUSE_WHEELUP_BUTTON = 64;
     public static final int MOUSE_WHEELDOWN_BUTTON = 65;
 
@@ -202,7 +204,7 @@ public final class TerminalEmulator {
     private static final int DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE = 1 << 6;
     /** DECSET 1002 - like 1000, but report moving mouse while pressed. */
     private static final int DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT = 1 << 7;
-    /** DECSET 1004 - NOT implemented. */
+    /** DECSET 1004 - send CSI I / CSI O on terminal focus in/out. */
     private static final int DECSET_BIT_SEND_FOCUS_EVENTS = 1 << 8;
     /** DECSET 1006 - SGR-like mouse protocol (the modern sane choice). */
     private static final int DECSET_BIT_MOUSE_PROTOCOL_SGR = 1 << 9;
@@ -212,6 +214,15 @@ public final class TerminalEmulator {
     private static final int DECSET_BIT_LEFTRIGHT_MARGIN_MODE = 1 << 11;
     /** Not really DECSET bit... - http://www.vt100.net/docs/vt510-rm/DECSACE */
     private static final int DECSET_BIT_RECTANGULAR_CHANGEATTRIBUTE = 1 << 12;
+    /** DECSET 1003 - report mouse motion even when no button is pressed. */
+    private static final int DECSET_BIT_MOUSE_TRACKING_ANY_EVENT = 1 << 13;
+    /** DECSET 2026 - synchronized output mode (defer rendering until CSI ? 2026 l or timeout). */
+    private static final int DECSET_BIT_SYNCHRONIZED_OUTPUT = 1 << 14;
+
+    private static final int MOUSE_TRACKING_BITS =
+        DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE |
+        DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT |
+        DECSET_BIT_MOUSE_TRACKING_ANY_EVENT;
 
 
     private String mTitle;
@@ -439,6 +450,12 @@ public final class TerminalEmulator {
     private final byte[] mUtf8InputBuffer = new byte[4];
     private int mLastEmittedCodePoint = -1;
 
+    /** Whether this emulator's host view currently holds window/session focus (for DECSET 1004). */
+    private boolean mFocused;
+
+    /** Set whenever a synchronized output frame closes via {@code CSI ? 2026 l}. */
+    private boolean mSynchronizedFrameCompleted;
+
     public final TerminalColors mColors = new TerminalColors();
 
     private static final String LOG_TAG = "TerminalEmulator";
@@ -449,14 +466,10 @@ public final class TerminalEmulator {
 
     private void setDecsetinternalBit(int internalBit, boolean set) {
         if (set) {
-            // The mouse modes are mutually exclusive.
-            if (internalBit == DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE) {
-                setDecsetinternalBit(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT, false);
-            } else if (internalBit == DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT) {
-                setDecsetinternalBit(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE, false);
+            // The mouse tracking modes (1000, 1002, 1003) are mutually exclusive.
+            if ((internalBit & MOUSE_TRACKING_BITS) != 0) {
+                mCurrentDecSetFlags &= ~MOUSE_TRACKING_BITS;
             }
-        }
-        if (set) {
             mCurrentDecSetFlags |= internalBit;
         } else {
             mCurrentDecSetFlags &= ~internalBit;
@@ -483,12 +496,16 @@ public final class TerminalEmulator {
                 return DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE;
             case 1002:
                 return DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT;
+            case 1003:
+                return DECSET_BIT_MOUSE_TRACKING_ANY_EVENT;
             case 1004:
                 return DECSET_BIT_SEND_FOCUS_EVENTS;
             case 1006:
                 return DECSET_BIT_MOUSE_PROTOCOL_SGR;
             case 2004:
                 return DECSET_BIT_BRACKETED_PASTE_MODE;
+            case 2026:
+                return DECSET_BIT_SYNCHRONIZED_OUTPUT;
             default:
                 return -1;
             // throw new IllegalArgumentException("Unsupported decset: " + decsetBit);
@@ -558,8 +575,13 @@ public final class TerminalEmulator {
         if (row < 1) row = 1;
         if (row > mRows) row = mRows;
 
-        if (mouseButton == MOUSE_LEFT_BUTTON_MOVED && !isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT)) {
-            // Do not send tracking.
+        final boolean supportsButtonMotion =
+            isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT) ||
+            isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_ANY_EVENT);
+        if (mouseButton == MOUSE_LEFT_BUTTON_MOVED && !supportsButtonMotion) {
+            // Do not send button-motion tracking.
+        } else if (mouseButton == MOUSE_MOTION_NO_BUTTON && !isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_ANY_EVENT)) {
+            // Do not send hover motion unless DECSET 1003 is active.
         } else if (isDecsetInternalBitSet(DECSET_BIT_MOUSE_PROTOCOL_SGR)) {
             mSession.write(String.format("\033[<%d;%d;%d" + (pressed ? 'M' : 'm'), mouseButton, column, row));
         } else {
@@ -681,7 +703,46 @@ public final class TerminalEmulator {
 
     /** If mouse events are being sent as escape codes to the terminal. */
     public boolean isMouseTrackingActive() {
-        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE) || isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT);
+        return (mCurrentDecSetFlags & MOUSE_TRACKING_BITS) != 0;
+    }
+
+    /** True when DECSET 1003 (any-event mouse tracking, including hover motion) is enabled. */
+    public boolean isMouseTrackingAnyEvent() {
+        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_ANY_EVENT);
+    }
+
+    /** True when DECSET 2026 synchronized output mode is currently open. */
+    public boolean isSynchronizedOutputActive() {
+        return isDecsetInternalBitSet(DECSET_BIT_SYNCHRONIZED_OUTPUT);
+    }
+
+    /** Force-clear DECSET 2026 (e.g. on watchdog timeout or process exit). */
+    public void clearSynchronizedOutput() {
+        setDecsetinternalBit(DECSET_BIT_SYNCHRONIZED_OUTPUT, false);
+    }
+
+    /** Returns and clears whether a {@code CSI ? 2026 l} frame boundary completed since the last check. */
+    public boolean consumeSynchronizedFrameCompleted() {
+        boolean completed = mSynchronizedFrameCompleted;
+        mSynchronizedFrameCompleted = false;
+        return completed;
+    }
+
+    /** True when DECSET 1004 focus event reporting is enabled. */
+    public boolean isSendFocusEventsEnabled() {
+        return isDecsetInternalBitSet(DECSET_BIT_SEND_FOCUS_EVENTS);
+    }
+
+    /**
+     * Report a host focus state transition. Emits {@code CSI I} or {@code CSI O} only when focus
+     * actually changes while DECSET 1004 is enabled.
+     */
+    public void reportFocusChange(boolean focused) {
+        if (mFocused == focused) return;
+        mFocused = focused;
+        if (isDecsetInternalBitSet(DECSET_BIT_SEND_FOCUS_EVENTS)) {
+            mSession.write(focused ? "\033[I" : "\033[O");
+        }
     }
 
     private void setDefaultTabStops() {
@@ -1796,9 +1857,13 @@ public final class TerminalEmulator {
     }
 
     public void doDecSetOrReset(boolean setting, int externalBit) {
+        boolean wasSyncActive = isDecsetInternalBitSet(DECSET_BIT_SYNCHRONIZED_OUTPUT);
         int internalBit = mapDecSetBitToInternalBit(externalBit);
         if (internalBit != -1) {
             setDecsetinternalBit(internalBit, setting);
+        }
+        if (externalBit == 2026 && wasSyncActive && !setting) {
+            mSynchronizedFrameCompleted = true;
         }
         switch (externalBit) {
             case 1: // Application Cursor Keys (DECCKM).
@@ -1888,6 +1953,9 @@ public final class TerminalEmulator {
             }
             case 2004:
                 // Bracketed paste mode - setting bit is enough.
+                break;
+            case 2026:
+                // Synchronized output mode - setting/clearing bit is enough.
                 break;
             default:
                 unknownParameter(externalBit);
@@ -3561,6 +3629,7 @@ public final class TerminalEmulator {
         mSavedStateMain.mSavedCursorRow = mSavedStateMain.mSavedCursorCol = mSavedStateMain.mSavedEffect = mSavedStateMain.mSavedDecFlags = 0;
         mSavedStateAlt.mSavedCursorRow = mSavedStateAlt.mSavedCursorCol = mSavedStateAlt.mSavedEffect = mSavedStateAlt.mSavedDecFlags = 0;
         mCurrentDecSetFlags = 0;
+        mSynchronizedFrameCompleted = false;
         // Initial wrap-around is not accurate but makes terminal more useful, especially on a small screen:
         setDecsetinternalBit(DECSET_BIT_AUTOWRAP, true);
         setDecsetinternalBit(DECSET_BIT_CURSOR_ENABLED, true);

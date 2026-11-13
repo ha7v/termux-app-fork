@@ -75,4 +75,56 @@ public class DecSetTest extends TerminalTestCase {
 		enterString("\033[?7hhij").assertLinesAre("abh", "ij ", "   ");
 	}
 
+	/** DECSET 2026 synchronized output + DECRQM query support. */
+	public void testSynchronizedOutputAndDecrqm() {
+		withTerminalSized(5, 3);
+		assertFalse(mTerminal.isSynchronizedOutputActive());
+
+		// DECRQM (?2026$p) must report 2 (recognized, reset) when off.
+		enterString("\033[?2026$p");
+		assertEquals("\033[?2026;2$y", mOutput.getOutputAndClear());
+
+		enterString("\033[?2026h");
+		assertTrue(mTerminal.isSynchronizedOutputActive());
+		assertFalse(mTerminal.consumeSynchronizedFrameCompleted());
+		enterString("\033[?2026$p");
+		assertEquals("\033[?2026;1$y", mOutput.getOutputAndClear());
+
+		enterString("\033[?2026l");
+		assertFalse(mTerminal.isSynchronizedOutputActive());
+		assertTrue(mTerminal.consumeSynchronizedFrameCompleted());
+		assertFalse(mTerminal.consumeSynchronizedFrameCompleted());
+
+		// Watchdog / reset clearing:
+		enterString("\033[?2026h");
+		assertTrue(mTerminal.isSynchronizedOutputActive());
+		mTerminal.clearSynchronizedOutput();
+		assertFalse(mTerminal.isSynchronizedOutputActive());
+	}
+
+	/** DECSET 1004 focus in/out event reporting with transition deduplication. */
+	public void testFocusEventsDecset1004() {
+		withTerminalSized(5, 3);
+		mTerminal.reportFocusChange(true);
+		assertEquals("", mOutput.getOutputAndClear());
+
+		enterString("\033[?1004h");
+		assertTrue(mTerminal.isSendFocusEventsEnabled());
+		// Redundant focus=true does not emit duplicate CSI I:
+		mTerminal.reportFocusChange(true);
+		assertEquals("", mOutput.getOutputAndClear());
+
+		mTerminal.reportFocusChange(false);
+		assertEquals("\033[O", mOutput.getOutputAndClear());
+		mTerminal.reportFocusChange(false);
+		assertEquals("", mOutput.getOutputAndClear());
+
+		mTerminal.reportFocusChange(true);
+		assertEquals("\033[I", mOutput.getOutputAndClear());
+
+		enterString("\033[?1004l");
+		mTerminal.reportFocusChange(false);
+		assertEquals("", mOutput.getOutputAndClear());
+	}
+
 }

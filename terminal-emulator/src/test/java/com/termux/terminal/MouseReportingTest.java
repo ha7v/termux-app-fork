@@ -43,6 +43,39 @@ public class MouseReportingTest extends TerminalTestCase {
         assertEquals(x10(32 + 3, 4, 2), mOutput.getOutputAndClear());
     }
 
+    public void testDecset1003AnyEventTrackingAndMutualExclusion() {
+        withTerminalSized(10, 5);
+        assertFalse(mTerminal.isMouseTrackingActive());
+        assertFalse(mTerminal.isMouseTrackingAnyEvent());
+
+        // Enable 1003: clicks, button-drag (32), and hover motion (35) must all be active.
+        enterString("\033[?1003h\033[?1006h");
+        assertTrue(mTerminal.isMouseTrackingActive());
+        assertTrue(mTerminal.isMouseTrackingAnyEvent());
+
+        mTerminal.sendMouseEvent(TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, 5, 3, true);
+        assertEquals("\033[<32;5;3M", mOutput.getOutputAndClear());
+        mTerminal.sendMouseEvent(TerminalEmulator.MOUSE_MOTION_NO_BUTTON, 6, 4, true);
+        assertEquals("\033[<35;6;4M", mOutput.getOutputAndClear());
+
+        // Switching to 1002 clears 1003: button-drag stays active, hover motion is suppressed.
+        enterString("\033[?1002h");
+        assertTrue(mTerminal.isMouseTrackingActive());
+        assertFalse(mTerminal.isMouseTrackingAnyEvent());
+        mTerminal.sendMouseEvent(TerminalEmulator.MOUSE_MOTION_NO_BUTTON, 6, 4, true);
+        assertEquals("", mOutput.getOutputAndClear());
+        mTerminal.sendMouseEvent(TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, 5, 3, true);
+        assertEquals("\033[<32;5;3M", mOutput.getOutputAndClear());
+
+        // Switching to 1000 clears 1002: both motion types are suppressed, clicks still work.
+        enterString("\033[?1000h");
+        assertTrue(mTerminal.isMouseTrackingActive());
+        mTerminal.sendMouseEvent(TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, 5, 3, true);
+        assertEquals("", mOutput.getOutputAndClear());
+        mTerminal.sendMouseEvent(TerminalEmulator.MOUSE_LEFT_BUTTON, 2, 2, true);
+        assertEquals("\033[<0;2;2M", mOutput.getOutputAndClear());
+    }
+
     private static String x10(int button, int column, int row) {
         return "\033[M" + (char) button + (char) (32 + column) + (char) (32 + row);
     }

@@ -117,6 +117,7 @@ public final class TerminalView extends View {
     private boolean mMouseModifiedTapPending;
     private boolean mMousePrimaryTapPending;
     private float mMouseDownX, mMouseDownY;
+    private int mLastHoverCol = -1, mLastHoverRow = -1;
     private final float mTouchSlop;
 
     private final Runnable mHoldStage1Runnable = this::onHoldStage1Timeout;
@@ -407,6 +408,11 @@ public final class TerminalView extends View {
 
         cancelSingleFingerHold(true);
         stopTextSelectionMode();
+        if (mEmulator != null) {
+            mEmulator.reportFocusChange(false);
+        }
+        mLastHoverCol = -1;
+        mLastHoverRow = -1;
 
         mTermSession = session;
         mEmulator = null;
@@ -1106,11 +1112,24 @@ public final class TerminalView extends View {
     /** Overriding {@link View#onGenericMotionEvent(MotionEvent)}. */
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
-        if (mEmulator != null && event.isFromSource(InputDevice.SOURCE_MOUSE) && event.getAction() == MotionEvent.ACTION_SCROLL) {
-            // Handle mouse wheel scrolling.
-            boolean up = event.getAxisValue(MotionEvent.AXIS_VSCROLL) > 0.0f;
-            doScroll(event, up ? -3 : 3);
-            return true;
+        if (mEmulator != null && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_SCROLL) {
+                // Handle mouse wheel scrolling.
+                boolean up = event.getAxisValue(MotionEvent.AXIS_VSCROLL) > 0.0f;
+                doScroll(event, up ? -3 : 3);
+                return true;
+            } else if (action == MotionEvent.ACTION_HOVER_MOVE && mEmulator.isMouseTrackingAnyEvent()) {
+                int[] colAndRow = getColumnAndRow(event, false);
+                int col = Math.max(1, Math.min(mEmulator.mColumns, colAndRow[0] + 1));
+                int row = Math.max(1, Math.min(mEmulator.mRows, colAndRow[1] + 1));
+                if (col != mLastHoverCol || row != mLastHoverRow) {
+                    mLastHoverCol = col;
+                    mLastHoverRow = row;
+                    mEmulator.sendMouseEvent(TerminalEmulator.MOUSE_MOTION_NO_BUTTON, col, row, true);
+                }
+                return true;
+            }
         }
         return false;
     }
@@ -1552,6 +1571,14 @@ public final class TerminalView extends View {
      * hierarchy, you're called with the old values of 0.
      */
     @Override
+    public void onWindowFocusChanged(boolean hasWindowFocus) {
+        super.onWindowFocusChanged(hasWindowFocus);
+        if (mEmulator != null) {
+            mEmulator.reportFocusChange(hasWindowFocus);
+        }
+    }
+
+    @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         updateSize();
     }
@@ -1580,6 +1607,7 @@ public final class TerminalView extends View {
             // maintained after opening/closing soft keyboard.
             int topRow = 0;
             if (mEmulator != null) {
+                mEmulator.reportFocusChange(hasWindowFocus());
                 int rowsInHistory = mEmulator.getScreen().getActiveTranscriptRows();
                 int cachedTopRow = mEmulator.getTopRow();
                 if (cachedTopRow >= -rowsInHistory) {
@@ -1926,7 +1954,9 @@ public final class TerminalView extends View {
                     mCursorVisible = !mCursorVisible;
                     //mClient.logVerbose(LOG_TAG, "Toggling cursor blink state to " + mCursorVisible);
                     mEmulator.setCursorBlinkState(mCursorVisible);
-                    invalidate();
+                    if (!mEmulator.isSynchronizedOutputActive()) {
+                        invalidate();
+                    }
                 }
             } finally {
                 // Recall the Runnable after mBlinkRate milliseconds to toggle the blink state
