@@ -58,6 +58,15 @@ public final class TerminalRow {
     /** If this row has a {@link TerminalBitmap}. Used for performance only. */
     public boolean mHasTerminalBitmap;
 
+    /**
+     * Cached cell-boundary cursor {@code (mCachedColumn -> mCachedCharIndex)} for {@code O(1)}
+     * sequential column lookups on rows containing wide, surrogate, or combining characters.
+     * Invariant: {@code mCachedColumn} is always the start column of a character (never the second
+     * column of a wide character) and {@code mCachedCharIndex} is its start index in {@link #mText}.
+     */
+    private int mCachedColumn;
+    private int mCachedCharIndex;
+
     /** Construct a blank row (containing only whitespace, ' ') with a specified style. */
     public TerminalRow(int columns, long style) {
         mColumns = columns;
@@ -99,35 +108,35 @@ public final class TerminalRow {
     /** Note that the column may end of second half of wide character. */
     public int findStartOfColumn(int column) {
         if (column == mColumns) return getSpaceUsed();
+        if (!mHasNonOneWidthOrSurrogateChars) return column;
+        if (column == mCachedColumn) return mCachedCharIndex;
 
         int currentColumn = 0;
         int currentCharIndex = 0;
-        while (true) { // 0<2 1 < 2
+        if (column > mCachedColumn) {
+            currentColumn = mCachedColumn;
+            currentCharIndex = mCachedCharIndex;
+        }
+
+        final char[] text = mText;
+        final int spaceUsed = mSpaceUsed;
+        while (true) {
             int newCharIndex = currentCharIndex;
-            char c = mText[newCharIndex++]; // cci=1, cci=2
+            char c = text[newCharIndex++];
             boolean isHigh = Character.isHighSurrogate(c);
-            int codePoint = isHigh ? Character.toCodePoint(c, mText[newCharIndex++]) : c;
-            int wcwidth = WcWidth.width(codePoint); // 1, 2
+            int codePoint = isHigh ? Character.toCodePoint(c, text[newCharIndex++]) : c;
+            int wcwidth = WcWidth.width(codePoint);
             if (wcwidth > 0) {
                 currentColumn += wcwidth;
                 if (currentColumn == column) {
-                    while (newCharIndex < mSpaceUsed) {
-                        // Skip combining chars.
-                        if (Character.isHighSurrogate(mText[newCharIndex])) {
-                            if (WcWidth.width(Character.toCodePoint(mText[newCharIndex], mText[newCharIndex + 1])) <= 0) {
-                                newCharIndex += 2;
-                            } else {
-                                break;
-                            }
-                        } else if (WcWidth.width(mText[newCharIndex]) <= 0) {
-                            newCharIndex++;
-                        } else {
-                            break;
-                        }
-                    }
+                    newCharIndex = skipTrailingCombiningChars(text, newCharIndex, spaceUsed);
+                    mCachedColumn = column;
+                    mCachedCharIndex = newCharIndex;
                     return newCharIndex;
                 } else if (currentColumn > column) {
-                    // Wide column going past end.
+                    // Wide column straddling target column; cache the wide char's start column.
+                    mCachedColumn = currentColumn - wcwidth;
+                    mCachedCharIndex = currentCharIndex;
                     return currentCharIndex;
                 }
             }
@@ -135,15 +144,58 @@ public final class TerminalRow {
         }
     }
 
+    private static int skipTrailingCombiningChars(char[] text, int charIndex, int spaceUsed) {
+        while (charIndex < spaceUsed) {
+            char c = text[charIndex];
+            if (Character.isHighSurrogate(c)) {
+                if (WcWidth.width(Character.toCodePoint(c, text[charIndex + 1])) <= 0) {
+                    charIndex += 2;
+                } else {
+                    break;
+                }
+            } else if (WcWidth.width(c) <= 0) {
+                charIndex++;
+            } else {
+                break;
+            }
+        }
+        return charIndex;
+    }
+
     private boolean wideDisplayCharacterStartingAt(int column) {
-        for (int currentCharIndex = 0, currentColumn = 0; currentCharIndex < mSpaceUsed; ) {
-            char c = mText[currentCharIndex++];
-            int codePoint = Character.isHighSurrogate(c) ? Character.toCodePoint(c, mText[currentCharIndex++]) : c;
+        if (!mHasNonOneWidthOrSurrogateChars || column < 0 || column >= mColumns - 1) {
+            return false;
+        }
+        if (column == mCachedColumn) {
+            return mCachedCharIndex < mSpaceUsed && WcWidth.width(mText, mCachedCharIndex) == 2;
+        }
+
+        int currentColumn = 0;
+        int currentCharIndex = 0;
+        if (column > mCachedColumn) {
+            currentColumn = mCachedColumn;
+            currentCharIndex = mCachedCharIndex;
+        }
+
+        final char[] text = mText;
+        final int spaceUsed = mSpaceUsed;
+        while (currentCharIndex < spaceUsed) {
+            int startIndex = currentCharIndex;
+            char c = text[currentCharIndex++];
+            int codePoint = Character.isHighSurrogate(c) ? Character.toCodePoint(c, text[currentCharIndex++]) : c;
             int wcwidth = WcWidth.width(codePoint);
             if (wcwidth > 0) {
-                if (currentColumn == column && wcwidth == 2) return true;
+                if (currentColumn == column) {
+                    mCachedColumn = column;
+                    mCachedCharIndex = startIndex;
+                    return wcwidth == 2;
+                }
                 currentColumn += wcwidth;
-                if (currentColumn > column) return false;
+                if (currentColumn > column) {
+                    mCachedColumn = currentColumn - wcwidth;
+                    mCachedCharIndex = startIndex;
+                    return false;
+                }
             }
         }
         return false;
@@ -156,6 +208,8 @@ public final class TerminalRow {
         mHasNonOneWidthOrSurrogateChars = false;
         mHasTerminalBitmap = false;
         mLineWrapBeforeWideChar = false;
+        mCachedColumn = 0;
+        mCachedCharIndex = 0;
     }
 
     // https://github.com/steven676/Android-Terminal-Emulator/commit/9a47042620bec87617f0b4f5d50568535668fe26
@@ -175,6 +229,7 @@ public final class TerminalRow {
         if (!mHasNonOneWidthOrSurrogateChars) {
             if (codePoint >= Character.MIN_SUPPLEMENTARY_CODE_POINT || newCodePointDisplayWidth != 1) {
                 mHasNonOneWidthOrSurrogateChars = true;
+                mCachedColumn = mCachedCharIndex = Math.max(0, columnToSet - 1);
             } else {
                 mText[columnToSet] = (char) codePoint;
                 return;
@@ -209,6 +264,12 @@ public final class TerminalRow {
             // Last character.
             oldCharactersUsedForColumn = mSpaceUsed - oldStartOfColumnIndex;
         }
+
+        // Anchor the cursor cache at columnToSet before mutating mText[oldStartOfColumnIndex..].
+        // Keeping it at columnToSet (rather than advancing past it) also ensures the next sequential
+        // setChar's wideDisplayCharacterStartingAt(nextCol - 1) hits the cache immediately.
+        mCachedColumn = columnToSet;
+        mCachedCharIndex = oldStartOfColumnIndex;
 
         // If MAX_COMBINING_CHARACTERS_PER_COLUMN already exist in column, then ignore adding additional combining characters.
         if (newIsCombining) {
@@ -267,6 +328,8 @@ public final class TerminalRow {
             ++mSpaceUsed;
         } else if (oldCodePointDisplayWidth == 1 && newCodePointDisplayWidth == 2) {
             if (columnToSet == mColumns - 1) {
+                mCachedColumn = 0;
+                mCachedCharIndex = 0;
                 throw new IllegalArgumentException("Cannot put wide character in last column");
             } else if (columnToSet == mColumns - 2) {
                 // Truncate the line to the second part of this wide char:
@@ -274,7 +337,8 @@ public final class TerminalRow {
             } else {
                 // Overwrite the contents of the next column, which mean we actually remove java characters. Due to the
                 // check at the beginning of this method we know that we are not overwriting a wide char.
-                int newNextNextColumnIndex = newNextColumnIndex + (Character.isHighSurrogate(mText[newNextColumnIndex]) ? 2 : 1);
+                int newNextNextColumnIndex = skipTrailingCombiningChars(text,
+                    newNextColumnIndex + (Character.isHighSurrogate(text[newNextColumnIndex]) ? 2 : 1), mSpaceUsed);
                 int nextLen = newNextNextColumnIndex - newNextColumnIndex;
 
                 // Shift the array leftwards.
