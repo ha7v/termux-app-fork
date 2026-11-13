@@ -3602,11 +3602,11 @@ public final class TerminalEmulator {
         // Second: Replace all newlines (\n) or CRLF (\r\n) with carriage returns (\r).
         text = text.replaceAll("\r?\n", "\r");
 
-        // Then: Implement bracketed paste mode if enabled:
-        boolean bracketed = isBracketedPasteEnabled();
-        if (bracketed) mSession.write("\033[200~");
+        // Then: Implement bracketed paste mode if enabled. The brackets and the text are written
+        // as one atomic write so the bounded input queue can never accept the opening bracket but
+        // reject the closing one, which would leave the shell stuck in bracketed paste.
+        if (isBracketedPasteEnabled()) text = "\033[200~" + text + "\033[201~";
         mSession.write(text);
-        if (bracketed) mSession.write("\033[201~");
     }
 
     /** http://www.vt100.net/docs/vt510-rm/DECSC */
