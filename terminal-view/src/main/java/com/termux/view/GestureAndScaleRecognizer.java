@@ -56,6 +56,9 @@ final class GestureAndScaleRecognizer {
                 isAfterLongPress = true;
             }
         }, null, true /* ignoreMultitouch */);
+        // Single-finger hold timing (two-stage hold and hold-to-drag selection) is managed by
+        // SingleFingerHoldDetector so movement events keep flowing after the hold triggers.
+        mGestureDetector.setIsLongpressEnabled(false);
 
         mGestureDetector.setOnDoubleTapListener(new GestureDetector.OnDoubleTapListener() {
             @Override
@@ -89,8 +92,6 @@ final class GestureAndScaleRecognizer {
     }
 
     public void onTouchEvent(MotionEvent event) {
-        // Run the scale detector first so that a pinch is recognised before the scroll callback, which
-        // decides between two-finger selection and zoom.
         mScaleDetector.onTouchEvent(event);
         mGestureDetector.onTouchEvent(event);
         switch (event.getAction()) {

@@ -28,6 +28,7 @@ public class TextSelectionCursorController implements CursorController {
 
     private final int mHandleHeight;
     private int mSelX1 = -1, mSelX2 = -1, mSelY1 = -1, mSelY2 = -1;
+    private int mDragAnchorX1 = -1, mDragAnchorX2 = -1, mDragAnchorY = -1;
 
     private ActionMode mActionMode;
     public final int ACTION_COPY = 1;
@@ -73,6 +74,7 @@ public class TextSelectionCursorController implements CursorController {
         }
 
         mSelX1 = mSelY1 = mSelX2 = mSelY2 = -1;
+        mDragAnchorX1 = mDragAnchorX2 = mDragAnchorY = -1;
         mIsSelectingText = false;
 
         return true;
@@ -92,25 +94,69 @@ public class TextSelectionCursorController implements CursorController {
 
     public void setInitialTextSelectionPosition(MotionEvent event) {
         int[] columnAndRow = terminalView.getColumnAndRow(event, true);
-        mSelX1 = mSelX2 = columnAndRow[0];
-        mSelY1 = mSelY2 = columnAndRow[1];
+        int[] bounds = expandWordSelectionAt(columnAndRow[0], columnAndRow[1]);
+        mSelX1 = bounds[0];
+        mSelX2 = bounds[1];
+        mSelY1 = mSelY2 = bounds[2];
+    }
 
+    /**
+     * Find the word bounds {@code [x1, x2, y]} around {@code (col, row)} after clamping to the
+     * active transcript + screen range. Whitespace selects only the single cell.
+     */
+    private int[] expandWordSelectionAt(int col, int row) {
         TerminalBuffer screen = terminalView.mEmulator.getScreen();
-        if (!" ".equals(screen.getSelectedText(mSelX1, mSelY1, mSelX1, mSelY1))) {
+        final int minY = -(screen.getActiveRows() - terminalView.mEmulator.mRows);
+        final int maxY = terminalView.mEmulator.mRows - 1;
+        final int maxX = terminalView.mEmulator.mColumns - 1;
+
+        int y = Math.max(minY, Math.min(row, maxY));
+        int x1 = Math.max(0, Math.min(col, maxX));
+        int x2 = x1;
+
+        if (!" ".equals(screen.getSelectedText(x1, y, x1, y))) {
             // Selecting something other than whitespace. Expand to word.
-            while (mSelX1 > 0 && !"".equals(screen.getSelectedText(mSelX1 - 1, mSelY1, mSelX1 - 1, mSelY1))) {
-                mSelX1--;
+            while (x1 > 0 && !"".equals(screen.getSelectedText(x1 - 1, y, x1 - 1, y))) {
+                x1--;
             }
-            while (mSelX2 < terminalView.mEmulator.mColumns - 1 && !"".equals(screen.getSelectedText(mSelX2 + 1, mSelY1, mSelX2 + 1, mSelY1))) {
-                mSelX2++;
+            while (x2 < maxX && !"".equals(screen.getSelectedText(x2 + 1, y, x2 + 1, y))) {
+                x2++;
             }
+        }
+        return new int[]{x1, x2, y};
+    }
+
+    /**
+     * Start a single-finger hold selection anchored on the word (or cell) at {@code (col, row)},
+     * highlighting it immediately while keeping handles hidden until the finger lifts.
+     */
+    public void beginDragSelection(int col, int row) {
+        if (terminalView.mEmulator == null) return;
+        int[] bounds = expandWordSelectionAt(col, row);
+        mDragAnchorX1 = bounds[0];
+        mDragAnchorX2 = bounds[1];
+        mDragAnchorY = bounds[2];
+        setDragSelection(mDragAnchorX1, mDragAnchorY, mDragAnchorX2, mDragAnchorY);
+    }
+
+    /**
+     * Extend the active hold-drag selection from the initial word anchor to {@code (col, row)}.
+     * Dragging forward keeps the start of the anchor word; dragging backward keeps its end.
+     */
+    public void updateAnchoredDragSelection(int col, int row) {
+        if (terminalView.mEmulator == null || mDragAnchorX1 < 0) return;
+        if (row < mDragAnchorY || (row == mDragAnchorY && col < mDragAnchorX1)) {
+            setDragSelection(col, row, mDragAnchorX2, mDragAnchorY);
+        } else if (row > mDragAnchorY || (row == mDragAnchorY && col > mDragAnchorX2)) {
+            setDragSelection(mDragAnchorX1, mDragAnchorY, col, row);
+        } else {
+            setDragSelection(mDragAnchorX1, mDragAnchorY, mDragAnchorX2, mDragAnchorY);
         }
     }
 
     /**
-     * Set a character-level selection during a two-finger drag, without activating the handles or the
-     * floating toolbar. The highlight is drawn from {@link #getSelectors}, which is read even while
-     * the controller is not active, so the drag does not disturb the touch routing.
+     * Set a character-level selection during a hold-and-drag gesture, without activating the handles
+     * or the floating toolbar until the finger is lifted.
      */
     public void setDragSelection(int x1, int y1, int x2, int y2) {
         if (terminalView.mEmulator == null) return;
@@ -142,6 +188,7 @@ public class TextSelectionCursorController implements CursorController {
         // mSelY1 is negative for a selection that starts in the transcript, so only mSelX1 (always
         // non-negative after setDragSelection) is a reliable "not set" sentinel.
         if (mSelX1 < 0) return;
+        mDragAnchorX1 = mDragAnchorX2 = mDragAnchorY = -1;
         mStartHandle.positionAtCursor(mSelX1, mSelY1, true);
         mEndHandle.positionAtCursor(mSelX2 + 1, mSelY2, true);
         setActionModeCallBacks();
@@ -150,10 +197,11 @@ public class TextSelectionCursorController implements CursorController {
         terminalView.invalidate();
     }
 
-    /** Discard a drag selection that was never activated, e.g. when a pinch starts. */
+    /** Discard a drag selection that was never activated, e.g. when a second finger goes down. */
     public void cancelDragSelection() {
         if (mIsSelectingText) return;
         mSelX1 = mSelY1 = mSelX2 = mSelY2 = -1;
+        mDragAnchorX1 = mDragAnchorX2 = mDragAnchorY = -1;
         terminalView.invalidate();
     }
     
@@ -386,6 +434,7 @@ public class TextSelectionCursorController implements CursorController {
     public void decrementYTextSelectionCursors(int decrement) {
         mSelY1 -= decrement;
         mSelY2 -= decrement;
+        if (mDragAnchorX1 >= 0) mDragAnchorY -= decrement;
     }
 
     public boolean onTouchEvent(MotionEvent event) {

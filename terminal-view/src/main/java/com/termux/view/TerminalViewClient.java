@@ -28,6 +28,25 @@ public interface TerminalViewClient {
      */
     void onSingleTapUp(MotionEvent e);
 
+    /**
+     * Whether a primary click/tap at {@code event} carries a modifier (such as {@code Ctrl+Click}
+     * on a URL) that should be intercepted by the client instead of being forwarded to mouse-aware
+     * terminal programs on button press.
+     */
+    default boolean shouldInterceptModifiedTap(MotionEvent event) {
+        return false;
+    }
+
+    /**
+     * Handle a modified single tap or primary mouse click (such as {@code Ctrl+Click} to open a URL
+     * or {@code Ctrl+Shift+Click} to copy it), taking precedence over terminal mouse tracking.
+     *
+     * @return {@code true} if the tap was consumed.
+     */
+    default boolean onModifiedSingleTap(MotionEvent event) {
+        return false;
+    }
+
     boolean shouldBackButtonBeMappedToEscape();
 
     boolean shouldEnforceCharBasedInput();
@@ -90,7 +109,7 @@ public interface TerminalViewClient {
     }
 
     /**
-     * Called on a three-finger horizontal swipe.
+     * Called on a two-finger horizontal swipe.
      *
      * @param forward {@code true} to switch to the next session, {@code false} for the previous one.
      */

@@ -190,16 +190,38 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
 
     @Override
+    public boolean shouldInterceptModifiedTap(MotionEvent e) {
+        return isControlModifierActive(e) && extractUrlAt(e) != null;
+    }
+
+    @Override
+    public boolean onModifiedSingleTap(MotionEvent e) {
+        if (!isControlModifierActive(e)) return false;
+        String url = extractUrlAt(e);
+        if (url == null) return false;
+
+        // Consume any latched ExtraKeys CTRL/SHIFT now that a URL tap actually matched.
+        readControlKey();
+        boolean copyOnly = e.isShiftPressed() || readShiftKey();
+        if (copyOnly) {
+            ShareUtils.copyTextToClipboard(mActivity, url,
+                mActivity.getString(R.string.msg_select_url_copied_to_clipboard));
+        } else {
+            ShareUtils.openUrl(mActivity, url);
+        }
+        return true;
+    }
+
+    @Override
     public void onSingleTapUp(MotionEvent e) {
-        TerminalEmulator term = mActivity.getCurrentSession().getEmulator();
+        TerminalSession session = mActivity.getCurrentSession();
+        if (session == null) return;
+        TerminalEmulator term = session.getEmulator();
+        if (term == null) return;
 
         if (mActivity.getProperties().shouldOpenTerminalTranscriptURLOnClick()) {
-            int[] columnAndRow = mActivity.getTerminalView().getColumnAndRow(e, true);
-            String wordAtTap = term.getScreen().getWordAtLocation(columnAndRow[0], columnAndRow[1]);
-            LinkedHashSet<CharSequence> urlSet = TermuxUrlUtils.extractUrls(wordAtTap);
-
-            if (!urlSet.isEmpty()) {
-                String url = (String) urlSet.iterator().next();
+            String url = extractUrlAt(e);
+            if (url != null) {
                 ShareUtils.openUrl(mActivity, url);
                 return;
             }
@@ -211,6 +233,29 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
             else
                 Logger.logVerbose(LOG_TAG, "Not showing soft keyboard onSingleTapUp since its disabled");
         }
+    }
+
+    private boolean isControlModifierActive(MotionEvent e) {
+        return e.isCtrlPressed() || mVirtualControlKeyDown || peekExtraKeysSpecialButton(SpecialButton.CTRL);
+    }
+
+    private String extractUrlAt(MotionEvent e) {
+        TerminalSession session = mActivity.getCurrentSession();
+        TerminalView terminalView = mActivity.getTerminalView();
+        if (session == null || terminalView == null) return null;
+        TerminalEmulator term = session.getEmulator();
+        if (term == null) return null;
+
+        int[] columnAndRow = terminalView.getColumnAndRow(e, true);
+        int col = columnAndRow[0];
+        int row = columnAndRow[1];
+        if (col < 0 || col >= term.mColumns || row < -term.getScreen().getActiveTranscriptRows() || row >= term.mRows) {
+            return null;
+        }
+        String wordAtTap = term.getScreen().getWordAtLocation(col, row);
+        LinkedHashSet<CharSequence> urlSet = TermuxUrlUtils.extractUrls(wordAtTap);
+        if (urlSet.isEmpty()) return null;
+        return urlSet.iterator().next().toString();
     }
 
     @Override
@@ -413,8 +458,16 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
     }
 
     public boolean readExtraKeysSpecialButton(SpecialButton specialButton) {
+        return readExtraKeysSpecialButton(specialButton, true);
+    }
+
+    private boolean peekExtraKeysSpecialButton(SpecialButton specialButton) {
+        return readExtraKeysSpecialButton(specialButton, false);
+    }
+
+    private boolean readExtraKeysSpecialButton(SpecialButton specialButton, boolean autoSetInActive) {
         if (mActivity.getExtraKeysView() == null) return false;
-        Boolean state = mActivity.getExtraKeysView().readSpecialButton(specialButton, true);
+        Boolean state = mActivity.getExtraKeysView().readSpecialButton(specialButton, autoSetInActive);
         if (state == null) {
             Logger.logError(LOG_TAG,"Failed to read an unregistered " + specialButton + " special button value from extra keys.");
             return false;
