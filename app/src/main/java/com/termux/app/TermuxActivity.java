@@ -661,7 +661,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         boolean canPaste = currentSession.isRunning() && clipboard != null && clipboard.hasPrimaryClip();
 
-        menu.add(Menu.NONE, CONTEXT_MENU_PASTE_ID, Menu.NONE, R.string.paste_text).setEnabled(canPaste);
+        menu.add(Menu.NONE, CONTEXT_MENU_PASTE_ID, Menu.NONE, R.string.action_paste_text).setEnabled(canPaste);
         menu.add(Menu.NONE, CONTEXT_MENU_SELECT_URL_ID, Menu.NONE, R.string.action_select_url);
         menu.add(Menu.NONE, CONTEXT_MENU_SHARE_TRANSCRIPT_ID, Menu.NONE, R.string.action_share_transcript);
         if (!DataUtils.isNullOrEmpty(mTerminalView.getStoredSelectedText()))
