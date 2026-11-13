@@ -3597,16 +3597,51 @@ public final class TerminalEmulator {
 
     /** If DECSET 2004 is set, prefix paste with "\033[200~" and suffix with "\033[201~". */
     public void paste(String text) {
-        // First: Always remove escape key and C1 control characters [0x80,0x9F]:
-        text = text.replaceAll("(\u001B|[\u0080-\u009F])", "");
-        // Second: Replace all newlines (\n) or CRLF (\r\n) with carriage returns (\r).
-        text = text.replaceAll("\r?\n", "\r");
+        String sanitized = sanitizePasteText(text);
+        if (isBracketedPasteEnabled()) {
+            // Enqueue bracketed start, body and end atomically so a bounded input queue never
+            // drops the closing bracket after accepting the opening bracket.
+            mSession.write("\033[200~" + sanitized + "\033[201~");
+        } else {
+            mSession.write(sanitized);
+        }
+    }
 
-        // Then: Implement bracketed paste mode if enabled:
-        boolean bracketed = isBracketedPasteEnabled();
-        if (bracketed) mSession.write("\033[200~");
-        mSession.write(text);
-        if (bracketed) mSession.write("\033[201~");
+    /**
+     * Single-pass paste sanitizer stripping ESC ({@code 0x1B}) and C1 controls ({@code 0x80..0x9F})
+     * and normalizing {@code \r\n} / {@code \n} to {@code \r}. Returns {@code text} unchanged when
+     * no replacement is needed.
+     */
+    static String sanitizePasteText(String text) {
+        final int len = text.length();
+        boolean needsTransform = false;
+        for (int i = 0; i < len; i++) {
+            char c = text.charAt(i);
+            if (c == '\u001B' || c == '\n' || (c >= '\u0080' && c <= '\u009F')) {
+                needsTransform = true;
+                break;
+            }
+        }
+        if (!needsTransform) return text;
+
+        StringBuilder sb = new StringBuilder(len);
+        boolean lastEmittedWasCr = false;
+        for (int i = 0; i < len; i++) {
+            char c = text.charAt(i);
+            if (c == '\u001B' || (c >= '\u0080' && c <= '\u009F')) {
+                continue;
+            }
+            if (c == '\n') {
+                if (!lastEmittedWasCr) {
+                    sb.append('\r');
+                }
+                lastEmittedWasCr = false;
+            } else {
+                sb.append(c);
+                lastEmittedWasCr = (c == '\r');
+            }
+        }
+        return sb.toString();
     }
 
     /** http://www.vt100.net/docs/vt510-rm/DECSC */

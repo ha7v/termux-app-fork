@@ -46,10 +46,10 @@ public final class TerminalSession extends TerminalOutput {
     /** Whether a {@link #MSG_NEW_INPUT} wakeup is queued for the main thread. */
     private final AtomicBoolean mNewInputMessagePending = new AtomicBoolean();
     /**
-     * A queue written to from the main thread due to user interaction, and read by another thread which forwards by
-     * writing to the {@link #mTerminalFileDescriptor}.
+     * A non-blocking queue written to from the main thread due to user interaction or terminal
+     * protocol responses, and drained on a dedicated writer thread into {@link #mTerminalFileDescriptor}.
      */
-    final ByteQueue mTerminalToProcessIOQueue = new ByteQueue(4096);
+    final NonBlockingWriteQueue mTerminalToProcessIOQueue = new NonBlockingWriteQueue();
     /** Buffer to write translate code points into utf8 before writing to mTerminalToProcessIOQueue */
     private final byte[] mUtf8InputBuffer = new byte[5];
 
@@ -155,7 +155,7 @@ public final class TerminalSession extends TerminalOutput {
         new Thread("TermSessionOutputWriter[pid=" + mShellPid + "]") {
             @Override
             public void run() {
-                final byte[] buffer = new byte[4096];
+                final byte[] buffer = new byte[16 * 1024];
                 try (FileOutputStream termOut = new FileOutputStream(terminalFileDescriptorWrapped)) {
                     while (true) {
                         int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
