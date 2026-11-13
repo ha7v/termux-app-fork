@@ -1,6 +1,7 @@
 package com.termux.terminal;
 
 import android.annotation.SuppressLint;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
 import android.system.ErrnoException;
@@ -34,13 +35,23 @@ public final class TerminalSession extends TerminalOutput {
 
     private static final int MSG_NEW_INPUT = 1;
     private static final int MSG_SYNC_OUTPUT_TIMEOUT = 2;
+    private static final int MSG_DRAIN_FALLBACK = 3;
     private static final int MSG_PROCESS_EXITED = 4;
 
+    /** Minimum VSync frame window (8 ms, ~120 Hz) for refilling the foreground parse token bucket. */
+    private static final long FRAME_WINDOW_NS = 8_000_000L;
     /**
-     * Per-frame main-thread VT parsing time budget (4 ms), leaving headroom within an 8.3 ms
-     * 120 Hz frame for input handling and {@code onDraw()} during heavy output floods.
+     * Per-frame main-thread VT parsing time budget (4 ms) when actively displayed, leaving headroom
+     * within an 8.3 ms 120 Hz frame for input handling and {@code onDraw()} during heavy floods.
      */
     private static final long FRAME_PARSE_BUDGET_NS = 4_000_000L;
+    /**
+     * Parse slice (12 ms) when the session is in the background or the display VSync is inactive
+     * (e.g. Doze / screen off), draining output at full speed without waiting on {@link Choreographer}.
+     */
+    private static final long BACKGROUND_SLICE_BUDGET_NS = 12_000_000L;
+    /** Fallback wakeup if {@link Choreographer} does not fire within 20 ms (e.g. Doze / screen off). */
+    private static final long VSYNC_FALLBACK_TIMEOUT_MS = 20L;
     /** Watchdog timeout (100 ms) after which an unclosed DECSET 2026 frame flushes automatically. */
     private static final long SYNC_OUTPUT_TIMEOUT_MS = 100L;
 
@@ -52,9 +63,11 @@ public final class TerminalSession extends TerminalOutput {
      * A queue written to from a separate thread when the process outputs, and read by main thread to process by
      * terminal emulator.
      */
-    final ByteQueue mProcessToTerminalIOQueue = new ByteQueue(64 * 1024);
+    final ByteQueue mProcessToTerminalIOQueue = new ByteQueue(256 * 1024);
     /** Whether a {@link #MSG_NEW_INPUT} wakeup is queued for the main thread. */
     private final AtomicBoolean mNewInputMessagePending = new AtomicBoolean();
+    /** True while this session is attached to a visible {@code TerminalView} on an active window. */
+    private volatile boolean mActivelyDisplayed;
     /**
      * A non-blocking queue written to from the main thread due to user interaction or terminal
      * protocol responses, and drained on a dedicated writer thread into {@link #mTerminalFileDescriptor}.
@@ -81,7 +94,7 @@ public final class TerminalSession extends TerminalOutput {
     /** Set by the application for user identification of session, not by terminal. */
     public String mSessionName;
 
-    final Handler mMainThreadHandler = new MainThreadHandler();
+    final MainThreadHandler mMainThreadHandler = new MainThreadHandler();
 
     private final String mShellPath;
     private final String mCwd;
@@ -147,14 +160,14 @@ public final class TerminalSession extends TerminalOutput {
             @Override
             public void run() {
                 try (InputStream termIn = new FileInputStream(terminalFileDescriptorWrapped)) {
-                    final byte[] buffer = new byte[16 * 1024];
+                    final byte[] buffer = new byte[32 * 1024];
                     while (true) {
                         int read = termIn.read(buffer);
                         if (read == -1) return;
                         if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
-                        if (mNewInputMessagePending.compareAndSet(false, true) &&
-                            !mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT))
-                            mNewInputMessagePending.set(false);
+                        if (mNewInputMessagePending.compareAndSet(false, true)) {
+                            mMainThreadHandler.enqueueNewInputWakeup();
+                        }
                     }
                 } catch (Exception e) {
                     // Ignore, just shutting down.
@@ -233,6 +246,19 @@ public final class TerminalSession extends TerminalOutput {
 
     public TerminalEmulator getEmulator() {
         return mEmulator;
+    }
+
+    /**
+     * Update whether this session is currently attached to a visible {@code TerminalView}.
+     * Only actively displayed sessions pace output floods against {@link Choreographer} VSync;
+     * background or screen-off sessions drain output slices directly without VSync throttling.
+     */
+    public void setActivelyDisplayed(boolean activelyDisplayed) {
+        if (mActivelyDisplayed == activelyDisplayed) return;
+        mActivelyDisplayed = activelyDisplayed;
+        if (!activelyDisplayed) {
+            mMainThreadHandler.onDisplayDeactivated();
+        }
     }
 
     /** Notify the {@link #mClient} that the screen has changed. */
@@ -351,23 +377,78 @@ public final class TerminalSession extends TerminalOutput {
     @SuppressLint("HandlerLeak")
     class MainThreadHandler extends Handler {
 
-        final byte[] mReceiveBuffer = new byte[16 * 1024];
+        final byte[] mReceiveBuffer = new byte[32 * 1024];
         private boolean mFrameCallbackScheduled;
+        private boolean mFallbackScheduled;
         private boolean mSyncTimeoutScheduled;
         private boolean mScreenUpdateDeferredBySync;
+        private long mBudgetWindowStartNs;
+        private long mFrameBudgetRemainingNs = FRAME_PARSE_BUDGET_NS;
 
         private final Choreographer.FrameCallback mFrameCallback = frameTimeNanos -> {
             mFrameCallbackScheduled = false;
+            if (mFallbackScheduled) {
+                mFallbackScheduled = false;
+                removeMessages(MSG_DRAIN_FALLBACK);
+            }
+            mBudgetWindowStartNs = System.nanoTime();
+            mFrameBudgetRemainingNs = FRAME_PARSE_BUDGET_NS;
             if (mEmulator != null) {
-                processAvailableInput(false);
+                processAvailableInput(false, false);
             }
         };
+
+        void enqueueNewInputWakeup() {
+            Message msg = obtainMessage(MSG_NEW_INPUT);
+            markAsynchronous(msg);
+            if (!sendMessage(msg)) {
+                mNewInputMessagePending.set(false);
+            }
+        }
+
+        private void sendAsyncDelayed(int what, long delayMs) {
+            Message msg = obtainMessage(what);
+            markAsynchronous(msg);
+            sendMessageDelayed(msg, delayMs);
+        }
+
+        private void markAsynchronous(Message msg) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                msg.setAsynchronous(true);
+            }
+        }
+
+        void onDisplayDeactivated() {
+            if (!mFrameCallbackScheduled && !mFallbackScheduled) return;
+            cancelFrameDrainCallbacks();
+            if (mEmulator != null) {
+                enqueueNewInputWakeup();
+            }
+        }
 
         @Override
         public void handleMessage(Message msg) {
             if (msg.what == MSG_NEW_INPUT) {
                 if (!mFrameCallbackScheduled && mEmulator != null) {
-                    processAvailableInput(false);
+                    processAvailableInput(false, false);
+                }
+                return;
+            }
+
+            if (msg.what == MSG_DRAIN_FALLBACK) {
+                mFallbackScheduled = false;
+                if (mFrameCallbackScheduled) {
+                    mFrameCallbackScheduled = false;
+                    try {
+                        Choreographer.getInstance().removeFrameCallback(mFrameCallback);
+                    } catch (RuntimeException ignored) {
+                    }
+                }
+                mBudgetWindowStartNs = System.nanoTime();
+                mFrameBudgetRemainingNs = FRAME_PARSE_BUDGET_NS;
+                if (mEmulator != null) {
+                    // Display VSync did not arrive within 20 ms (e.g. Doze / screen off): drain unthrottled.
+                    processAvailableInput(false, true);
                 }
                 return;
             }
@@ -387,7 +468,7 @@ public final class TerminalSession extends TerminalOutput {
             if (msg.what == MSG_PROCESS_EXITED) {
                 cancelScheduledCallbacks();
                 if (mEmulator != null) {
-                    processAvailableInput(true);
+                    processAvailableInput(true, false);
                     mEmulator.clearSynchronizedOutput();
                     mScreenUpdateDeferredBySync = false;
                 }
@@ -413,9 +494,29 @@ public final class TerminalSession extends TerminalOutput {
             }
         }
 
-        private void processAvailableInput(boolean drainAll) {
-            final long deadlineNs = drainAll ? Long.MAX_VALUE : (System.nanoTime() + FRAME_PARSE_BUDGET_NS);
+        private void processAvailableInput(boolean drainAll, boolean forceBackgroundSlice) {
+            final boolean paceWithVsync = !drainAll && !forceBackgroundSlice && mActivelyDisplayed;
+            final long startNs = System.nanoTime();
+            final long sliceBudgetNs;
+
+            if (drainAll) {
+                sliceBudgetNs = Long.MAX_VALUE;
+            } else if (paceWithVsync) {
+                if (startNs - mBudgetWindowStartNs >= FRAME_WINDOW_NS) {
+                    mBudgetWindowStartNs = startNs;
+                    mFrameBudgetRemainingNs = FRAME_PARSE_BUDGET_NS;
+                }
+                if (mFrameBudgetRemainingNs <= 0L) {
+                    scheduleNextFrameDrain();
+                    return;
+                }
+                sliceBudgetNs = mFrameBudgetRemainingNs;
+            } else {
+                sliceBudgetNs = BACKGROUND_SLICE_BUDGET_NS;
+            }
+
             boolean appendedAny = false;
+            boolean yieldedWithMoreData = false;
 
             while (true) {
                 int bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false);
@@ -432,26 +533,34 @@ public final class TerminalSession extends TerminalOutput {
                 mEmulator.append(mReceiveBuffer, bytesRead);
                 appendedAny = true;
 
-                if (!drainAll && System.nanoTime() >= deadlineNs) {
-                    // Budget exhausted during a flood: keep mNewInputMessagePending == true so the
-                    // reader thread does not enqueue immediate messages, and resume next VSync.
-                    scheduleNextFrameDrain();
+                if (!drainAll && (System.nanoTime() - startNs) >= sliceBudgetNs) {
+                    yieldedWithMoreData = true;
                     break;
                 }
             }
 
-            boolean completedSyncFrame = mEmulator.consumeSynchronizedFrameCompleted();
+            if (paceWithVsync && appendedAny) {
+                long totalElapsed = System.nanoTime() - startNs;
+                mFrameBudgetRemainingNs = Math.max(0L, mFrameBudgetRemainingNs - totalElapsed);
+            }
+
+            if (yieldedWithMoreData) {
+                mNewInputMessagePending.set(true);
+                if (paceWithVsync) {
+                    scheduleNextFrameDrain();
+                } else {
+                    enqueueNewInputWakeup();
+                }
+            }
+
+            mEmulator.consumeSynchronizedFrameCompleted();
             if (mEmulator.isSynchronizedOutputActive()) {
                 if (appendedAny) {
                     mScreenUpdateDeferredBySync = true;
                 }
-                if (completedSyncFrame && mSyncTimeoutScheduled) {
-                    removeMessages(MSG_SYNC_OUTPUT_TIMEOUT);
-                    mSyncTimeoutScheduled = false;
-                }
                 if (!mSyncTimeoutScheduled) {
                     mSyncTimeoutScheduled = true;
-                    sendEmptyMessageDelayed(MSG_SYNC_OUTPUT_TIMEOUT, SYNC_OUTPUT_TIMEOUT_MS);
+                    sendAsyncDelayed(MSG_SYNC_OUTPUT_TIMEOUT, SYNC_OUTPUT_TIMEOUT_MS);
                 }
             } else {
                 if (mSyncTimeoutScheduled) {
@@ -470,14 +579,17 @@ public final class TerminalSession extends TerminalOutput {
             try {
                 Choreographer.getInstance().postFrameCallback(mFrameCallback);
                 mFrameCallbackScheduled = true;
+                if (!mFallbackScheduled) {
+                    mFallbackScheduled = true;
+                    sendAsyncDelayed(MSG_DRAIN_FALLBACK, VSYNC_FALLBACK_TIMEOUT_MS);
+                }
             } catch (RuntimeException e) {
                 // Fallback for headless test environments without a Choreographer.
-                mNewInputMessagePending.set(true);
-                sendEmptyMessageDelayed(MSG_NEW_INPUT, 8L);
+                sendAsyncDelayed(MSG_NEW_INPUT, 8L);
             }
         }
 
-        private void cancelScheduledCallbacks() {
+        private void cancelFrameDrainCallbacks() {
             if (mFrameCallbackScheduled) {
                 mFrameCallbackScheduled = false;
                 try {
@@ -485,6 +597,14 @@ public final class TerminalSession extends TerminalOutput {
                 } catch (RuntimeException ignored) {
                 }
             }
+            if (mFallbackScheduled) {
+                mFallbackScheduled = false;
+                removeMessages(MSG_DRAIN_FALLBACK);
+            }
+        }
+
+        private void cancelScheduledCallbacks() {
+            cancelFrameDrainCallbacks();
             if (mSyncTimeoutScheduled) {
                 mSyncTimeoutScheduled = false;
                 removeMessages(MSG_SYNC_OUTPUT_TIMEOUT);

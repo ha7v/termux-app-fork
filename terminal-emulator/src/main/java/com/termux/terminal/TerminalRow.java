@@ -107,6 +107,7 @@ public final class TerminalRow {
 
     /** Note that the column may end of second half of wide character. */
     public int findStartOfColumn(int column) {
+        if (column == 0) return 0;
         if (column == mColumns) return getSpaceUsed();
         if (!mHasNonOneWidthOrSurrogateChars) return column;
         if (column == mCachedColumn) return mCachedCharIndex;

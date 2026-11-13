@@ -118,6 +118,7 @@ public final class TerminalView extends View {
     private boolean mMousePrimaryTapPending;
     private float mMouseDownX, mMouseDownY;
     private int mLastHoverCol = -1, mLastHoverRow = -1;
+    private int mLastDragCol = -1, mLastDragRow = -1;
     private final float mTouchSlop;
 
     private final Runnable mHoldStage1Runnable = this::onHoldStage1Timeout;
@@ -223,6 +224,9 @@ public final class TerminalView extends View {
         mMultiFingerTapDetector = new MultiFingerTapDetector(touchSlop * 4, 1500);
         mMultiFingerSwipeDetector = new MultiFingerSwipeDetector(2, touchSlop * 3, touchSlop * 4);
         mHoldDetector = new SingleFingerHoldDetector(touchSlop, touchSlop * 1.25f);
+        if (Build.VERSION.SDK_INT >= 35) {
+            setRequestedFrameRate(REQUESTED_FRAME_RATE_CATEGORY_HIGH);
+        }
         mGestureRecognizer = new GestureAndScaleRecognizer(context, new GestureAndScaleRecognizer.Listener() {
 
             boolean scrolledWithFinger;
@@ -408,13 +412,19 @@ public final class TerminalView extends View {
 
         cancelSingleFingerHold(true);
         stopTextSelectionMode();
+        if (mTermSession != null) {
+            mTermSession.setActivelyDisplayed(false);
+        }
         if (mEmulator != null) {
             mEmulator.reportFocusChange(false);
         }
         mLastHoverCol = -1;
         mLastHoverRow = -1;
+        mLastDragCol = -1;
+        mLastDragRow = -1;
 
         mTermSession = session;
+        syncSessionDisplayState();
         mEmulator = null;
         mCombiningAccent = 0;
 
@@ -805,14 +815,35 @@ public final class TerminalView extends View {
                 mMouseScrollStartY = y;
             }
         }
-        mEmulator.sendMouseEvent(button, x, y, pressed);
+        dispatchMouseEventAtCell(button, x, y, pressed);
     }
 
     /** Send a single mouse event at a view-relative pixel position. */
     void sendMouseEventCodeAt(int button, float x, float y, boolean pressed) {
         int column = (int) (x / mRenderer.mFontWidth) + 1;
         int row = (int) ((y - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing) + 1;
-        mEmulator.sendMouseEvent(button, column, row, pressed);
+        dispatchMouseEventAtCell(button, column, row, pressed);
+    }
+
+    private void dispatchMouseEventAtCell(int button, int column, int row, boolean pressed) {
+        int clampedCol = Math.max(1, Math.min(mEmulator.mColumns, column));
+        int clampedRow = Math.max(1, Math.min(mEmulator.mRows, row));
+        if (button == TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED) {
+            if (clampedCol == mLastDragCol && clampedRow == mLastDragRow) {
+                return;
+            }
+            mLastDragCol = clampedCol;
+            mLastDragRow = clampedRow;
+        } else if (button == TerminalEmulator.MOUSE_LEFT_BUTTON) {
+            if (pressed) {
+                mLastDragCol = clampedCol;
+                mLastDragRow = clampedRow;
+            } else {
+                mLastDragCol = -1;
+                mLastDragRow = -1;
+            }
+        }
+        mEmulator.sendMouseEvent(button, clampedCol, clampedRow, pressed);
     }
 
     /**
@@ -2072,17 +2103,32 @@ public final class TerminalView extends View {
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
 
+        syncSessionDisplayState();
         if (mTextSelectionCursorController != null) {
             getViewTreeObserver().addOnTouchModeChangeListener(mTextSelectionCursorController);
         }
     }
 
     @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        syncSessionDisplayState();
+    }
+
+    @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
 
+        if (mTermSession != null) {
+            mTermSession.setActivelyDisplayed(false);
+        }
         cancelSingleFingerHold(true);
         mMouseModifiedTapPending = false;
+        mMousePrimaryTapPending = false;
+        mLastHoverCol = -1;
+        mLastHoverRow = -1;
+        mLastDragCol = -1;
+        mLastDragRow = -1;
         releaseForwardedButton();
         mMultiFingerTapDetector.onCancel();
         mMultiFingerSwipeDetector.onCancel();
@@ -2095,6 +2141,12 @@ public final class TerminalView extends View {
 
             getViewTreeObserver().removeOnTouchModeChangeListener(mTextSelectionCursorController);
             mTextSelectionCursorController.onDetached();
+        }
+    }
+
+    private void syncSessionDisplayState() {
+        if (mTermSession != null) {
+            mTermSession.setActivelyDisplayed(isAttachedToWindow() && getWindowVisibility() == VISIBLE);
         }
     }
 

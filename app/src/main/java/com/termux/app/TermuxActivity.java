@@ -13,15 +13,18 @@ import android.content.ServiceConnection;
 import android.content.res.ColorStateList;
 import android.graphics.Rect;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.view.ContextMenu;
 import android.view.ContextMenu.ContextMenuInfo;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -262,6 +265,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mProperties.isUsingFullScreen()) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         }
+        preferHighestRefreshRateDisplayMode();
 
         setTermuxTerminalViewAndClients();
 
@@ -330,6 +334,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         Logger.logVerbose(LOG_TAG, "onResume");
 
         if (mIsInvalidState) return;
+
+        preferHighestRefreshRateDisplayMode();
 
         if (mTermuxTerminalSessionActivityClient != null)
             mTermuxTerminalSessionActivityClient.onResume();
@@ -1123,6 +1129,38 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
 
+
+    /**
+     * Request the highest refresh-rate {@link Display.Mode} matching the active physical resolution
+     * (e.g. 120 Hz instead of the 60 Hz default applied by OEM LTPO policies to {@code targetSdk=28} apps).
+     */
+    @SuppressWarnings("deprecation")
+    private void preferHighestRefreshRateDisplayMode() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        Window window = getWindow();
+        if (window == null) return;
+        Display display = window.getWindowManager().getDefaultDisplay();
+        if (display == null) return;
+
+        Display.Mode activeMode = display.getMode();
+        Display.Mode[] supportedModes = display.getSupportedModes();
+        if (activeMode == null || supportedModes == null) return;
+
+        Display.Mode bestMode = activeMode;
+        for (Display.Mode candidate : supportedModes) {
+            if (candidate.getPhysicalWidth() == activeMode.getPhysicalWidth() &&
+                candidate.getPhysicalHeight() == activeMode.getPhysicalHeight() &&
+                candidate.getRefreshRate() > bestMode.getRefreshRate() + 0.1f) {
+                bestMode = candidate;
+            }
+        }
+
+        WindowManager.LayoutParams params = window.getAttributes();
+        if (params.preferredDisplayModeId != bestMode.getModeId()) {
+            params.preferredDisplayModeId = bestMode.getModeId();
+            window.setAttributes(params);
+        }
+    }
 
     public static void startTermuxActivity(@NonNull final Context context) {
         ActivityUtils.startActivity(context, newInstance(context));

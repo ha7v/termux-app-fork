@@ -65,7 +65,7 @@ final class NonBlockingWriteQueue {
      *         or if accepting the slice would exceed {@code mMaxBytes}.
      */
     public boolean write(byte[] buffer, int offset, int lengthToWrite) {
-        if (offset < 0 || lengthToWrite < 0 || offset + lengthToWrite > buffer.length) {
+        if (offset < 0 || lengthToWrite < 0 || offset > buffer.length || lengthToWrite > buffer.length - offset) {
             throw new IllegalArgumentException("Invalid slice: offset=" + offset + ", length=" + lengthToWrite + ", buf=" + buffer.length);
         }
         if (lengthToWrite == 0) {

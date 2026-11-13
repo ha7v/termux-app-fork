@@ -448,6 +448,7 @@ public final class TerminalEmulator {
 
     private byte mUtf8ToFollow, mUtf8Index;
     private final byte[] mUtf8InputBuffer = new byte[4];
+    private final byte[] mMouseEventBuffer = new byte[32];
     private int mLastEmittedCodePoint = -1;
 
     /** Whether this emulator's host view currently holds window/session focus (for DECSET 1004). */
@@ -583,16 +584,58 @@ public final class TerminalEmulator {
         } else if (mouseButton == MOUSE_MOTION_NO_BUTTON && !isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_ANY_EVENT)) {
             // Do not send hover motion unless DECSET 1003 is active.
         } else if (isDecsetInternalBitSet(DECSET_BIT_MOUSE_PROTOCOL_SGR)) {
-            mSession.write(String.format("\033[<%d;%d;%d" + (pressed ? 'M' : 'm'), mouseButton, column, row));
+            writeSgrMouseEvent(mouseButton, column, row, pressed);
         } else {
             mouseButton = pressed ? mouseButton : 3; // 3 for release of all buttons.
             // Clip to screen, and clip to the limits of 8-bit data.
             boolean out_of_bounds = column > 255 - 32 || row > 255 - 32;
             if (!out_of_bounds) {
-                byte[] data = {'\033', '[', 'M', (byte) (32 + mouseButton), (byte) (32 + column), (byte) (32 + row)};
-                mSession.write(data, 0, data.length);
+                byte[] buf = mMouseEventBuffer;
+                buf[0] = '\033';
+                buf[1] = '[';
+                buf[2] = 'M';
+                buf[3] = (byte) (32 + mouseButton);
+                buf[4] = (byte) (32 + column);
+                buf[5] = (byte) (32 + row);
+                mSession.write(buf, 0, 6);
             }
         }
+    }
+
+    /** Locale-independent, zero-allocation ASCII encoder for {@code CSI < Cb ; Cx ; Cy M/m}. */
+    private void writeSgrMouseEvent(int mouseButton, int column, int row, boolean pressed) {
+        byte[] buf = mMouseEventBuffer;
+        int pos = 0;
+        buf[pos++] = '\033';
+        buf[pos++] = '[';
+        buf[pos++] = '<';
+        pos = appendAsciiUint(buf, pos, mouseButton);
+        buf[pos++] = ';';
+        pos = appendAsciiUint(buf, pos, column);
+        buf[pos++] = ';';
+        pos = appendAsciiUint(buf, pos, row);
+        buf[pos++] = (byte) (pressed ? 'M' : 'm');
+        mSession.write(buf, 0, pos);
+    }
+
+    private static int appendAsciiUint(byte[] buf, int pos, int value) {
+        if (value < 10) {
+            buf[pos] = (byte) ('0' + value);
+            return pos + 1;
+        }
+        int digits = 0;
+        int tmp = value;
+        while (tmp > 0) {
+            digits++;
+            tmp /= 10;
+        }
+        int end = pos + digits;
+        int cur = end;
+        while (value > 0) {
+            buf[--cur] = (byte) ('0' + (value % 10));
+            value /= 10;
+        }
+        return end;
     }
 
     public void resize(int columns, int rows, int cellWidthPixels, int cellHeightPixels) {
