@@ -36,6 +36,7 @@ public final class TerminalRenderer {
     final int mFontLineSpacingAndAscent;
 
     private final float[] asciiMeasures = new float[127];
+    private final GlyphWidthCache mGlyphWidthCache = new GlyphWidthCache(1024);
 
     public TerminalRenderer(int textSize, Typeface typeface) {
         mTextSize = textSize;
@@ -130,8 +131,21 @@ public final class TerminalRenderer {
                 // This could happen for some fonts which are not truly monospace, or for more exotic characters such as
                 // smileys which android font renders as wide.
                 // If this is detected, we draw this code point scaled to match what wcwidth() expects.
-                final float measuredCodePointWidth = (codePoint < asciiMeasures.length) ? asciiMeasures[codePoint] : mTextPaint.measureText(line,
-                    currentCharIndex, charsForCodePoint);
+                final float measuredCodePointWidth;
+                if (codePoint < asciiMeasures.length) {
+                    measuredCodePointWidth = asciiMeasures[codePoint];
+                } else {
+                    float cachedWidth = mGlyphWidthCache.get(codePoint);
+                    if (cachedWidth < 0f) {
+                        // Reset paint styling left over from any previous drawTextRun() so cached
+                        // non-ASCII measurements use the same baseline paint state as asciiMeasures.
+                        mTextPaint.setFakeBoldText(false);
+                        mTextPaint.setTextSkewX(0f);
+                        cachedWidth = mTextPaint.measureText(line, currentCharIndex, charsForCodePoint);
+                        mGlyphWidthCache.put(codePoint, cachedWidth);
+                    }
+                    measuredCodePointWidth = cachedWidth;
+                }
                 final boolean fontWidthMismatch = Math.abs(measuredCodePointWidth / mFontWidth - codePointWcWidth) > 0.01;
 
                 if (style != lastRunStyle || insideCursor != lastRunInsideCursor || insideSelection != lastRunInsideSelection || fontWidthMismatch || lastRunFontWidthMismatch) {
