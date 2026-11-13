@@ -424,9 +424,124 @@ public class TerminalRowTest extends TestCase {
 		row.setChar(COLUMNS - 1, 'ö', 0);
 		assertEquals('Z', row.mText[row.findStartOfColumn(COLUMNS - 2)]);
 		assertEquals('ö', row.mText[row.findStartOfColumn(COLUMNS - 1)]);
-		// line.setChar(COLUMNS - 1, ONE_JAVA_CHAR_DISPLAY_WIDTH_TWO_1);
-		// assertEquals('Z', line.mText[line.findStartOfColumn(COLUMNS - 2)]);
-		// assertEquals(' ', line.mText[line.findStartOfColumn(COLUMNS - 1)]);
+	}
+
+	public void testOverwritingCombiningCellWithWideChar() {
+		row.setChar(0, 'a', 0);
+		row.setChar(1, 'e', 0);
+		row.setChar(1, DIARESIS_CODEPOINT, 0);
+		row.setChar(2, 'x', 0);
+		assertEquals(81, row.getSpaceUsed());
+
+		// Overwriting col 0..1 with a wide char must also remove col 1's trailing combining mark.
+		row.setChar(0, ONE_JAVA_CHAR_DISPLAY_WIDTH_TWO_1, 0);
+		assertEquals(79, row.getSpaceUsed());
+		assertLineStartsWith(ONE_JAVA_CHAR_DISPLAY_WIDTH_TWO_1, 'x', ' ');
+		assertEquals(0, row.findStartOfColumn(0));
+		assertEquals(0, row.findStartOfColumn(1));
+		assertEquals(1, row.findStartOfColumn(2));
+	}
+
+	/** Reference uncached scan from column 0 used as oracle for {@link TerminalRow#findStartOfColumn(int)}. */
+	private static int referenceFindStartOfColumn(TerminalRow targetRow, int columns, int column) {
+		if (column == columns) return targetRow.getSpaceUsed();
+		char[] text = targetRow.mText;
+		int spaceUsed = targetRow.getSpaceUsed();
+		int currentColumn = 0;
+		int currentCharIndex = 0;
+		while (true) {
+			int newCharIndex = currentCharIndex;
+			char c = text[newCharIndex++];
+			int codePoint = Character.isHighSurrogate(c) ? Character.toCodePoint(c, text[newCharIndex++]) : c;
+			int wcwidth = WcWidth.width(codePoint);
+			if (wcwidth > 0) {
+				currentColumn += wcwidth;
+				if (currentColumn == column) {
+					while (newCharIndex < spaceUsed) {
+						if (Character.isHighSurrogate(text[newCharIndex])) {
+							if (WcWidth.width(Character.toCodePoint(text[newCharIndex], text[newCharIndex + 1])) <= 0) {
+								newCharIndex += 2;
+							} else {
+								break;
+							}
+						} else if (WcWidth.width(text[newCharIndex]) <= 0) {
+							newCharIndex++;
+						} else {
+							break;
+						}
+					}
+					return newCharIndex;
+				} else if (currentColumn > column) {
+					return currentCharIndex;
+				}
+			}
+			currentCharIndex = newCharIndex;
+		}
+	}
+
+	public void testCursorCacheRandomizedOracle() {
+		final int cols = 120;
+		final int[] alphabet = new int[]{
+			' ', 'a', 'Z',
+			ONE_JAVA_CHAR_DISPLAY_WIDTH_TWO_1,
+			ONE_JAVA_CHAR_DISPLAY_WIDTH_TWO_2,
+			TWO_JAVA_CHARS_DISPLAY_WIDTH_ONE_1,
+			TWO_JAVA_CHARS_DISPLAY_WIDTH_TWO_1,
+			DIARESIS_CODEPOINT,
+			0x0303 // combining tilde
+		};
+		Random rng = new Random(0x5EED1234L);
+		TerminalRow fuzzRow = new TerminalRow(cols, TextStyle.NORMAL);
+
+		for (int step = 0; step < 5000; step++) {
+			if (step % 500 == 499) {
+				fuzzRow.clear(TextStyle.NORMAL);
+			}
+			int cp = alphabet[rng.nextInt(alphabet.length)];
+			int maxCol = (WcWidth.width(cp) == 2) ? (cols - 1) : cols;
+			int col = rng.nextInt(maxCol);
+			fuzzRow.setChar(col, cp, step);
+
+			// Probe random columns in non-monotonic order as well as sequential sweep every 50 steps.
+			for (int q = 0; q < 6; q++) {
+				int probeCol = rng.nextInt(cols + 1);
+				assertEquals("step=" + step + " probeCol=" + probeCol,
+					referenceFindStartOfColumn(fuzzRow, cols, probeCol),
+					fuzzRow.findStartOfColumn(probeCol));
+			}
+			if (step % 50 == 0) {
+				for (int c = 0; c <= cols; c++) {
+					assertEquals("sweep step=" + step + " col=" + c,
+						referenceFindStartOfColumn(fuzzRow, cols, c),
+						fuzzRow.findStartOfColumn(c));
+				}
+			}
+		}
+	}
+
+	/**
+	 * {@link TerminalRow#copyInterval} re-enables the slow path via {@code mHasNonOneWidthOrSurrogateChars |= ...}
+	 * without re-anchoring the column cursor cache (only {@code setChar} does), so the cache reset in
+	 * {@link TerminalRow#clear(long)} is load-bearing: a stale cursor from before the clear must never be reused.
+	 */
+	public void testClearResetsCursorCacheBeforeCopyIntervalReenablesSlowPath() {
+		final int cols = 10;
+		TerminalRow target = new TerminalRow(cols, TextStyle.NORMAL);
+		target.setChar(0, ONE_JAVA_CHAR_DISPLAY_WIDTH_TWO_1, TextStyle.NORMAL);
+		// Leave the cursor cache at (column 5 -> char index 4), which is only valid while column 0 holds a wide char.
+		assertEquals(4, target.findStartOfColumn(5));
+		target.clear(TextStyle.NORMAL);
+
+		TerminalRow source = new TerminalRow(cols, TextStyle.NORMAL);
+		source.setChar(7, TWO_JAVA_CHARS_DISPLAY_WIDTH_ONE_1, TextStyle.NORMAL);
+		// A width-1 surrogate pair makes setChar() feed a stale cursor straight into findStartOfColumn().
+		target.copyInterval(source, 7, 8, 7);
+
+		assertEquals("       " + new String(Character.toChars(TWO_JAVA_CHARS_DISPLAY_WIDTH_ONE_1)) + "  ",
+			new String(target.mText, 0, target.getSpaceUsed()));
+		assertEquals(7, target.findStartOfColumn(7));
+		assertEquals(9, target.findStartOfColumn(8));
+		assertEquals(10, target.findStartOfColumn(9));
 	}
 
 }
