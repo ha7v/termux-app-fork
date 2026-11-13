@@ -202,7 +202,7 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
         // Consume any latched ExtraKeys CTRL/SHIFT now that a URL tap actually matched.
         readControlKey();
-        boolean copyOnly = e.isShiftPressed() || readShiftKey();
+        boolean copyOnly = (e.getMetaState() & KeyEvent.META_SHIFT_ON) != 0 || readShiftKey();
         if (copyOnly) {
             ShareUtils.copyTextToClipboard(mActivity, url,
                 mActivity.getString(R.string.msg_select_url_copied_to_clipboard));
@@ -236,7 +236,9 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
     }
 
     private boolean isControlModifierActive(MotionEvent e) {
-        return e.isCtrlPressed() || mVirtualControlKeyDown || peekExtraKeysSpecialButton(SpecialButton.CTRL);
+        return (e.getMetaState() & KeyEvent.META_CTRL_ON) != 0 ||
+            mVirtualControlKeyDown ||
+            peekExtraKeysSpecialButton(SpecialButton.CTRL);
     }
 
     private String extractUrlAt(MotionEvent e) {
