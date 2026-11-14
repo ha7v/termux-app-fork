@@ -42,6 +42,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 
 import com.termux.terminal.KeyHandler;
+import com.termux.terminal.KeyboardProtocol;
 import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
 import com.termux.view.textselection.TextSelectionCursorController;
@@ -155,6 +156,14 @@ public final class TerminalView extends View {
      * must be committed before input that bypasses the IME is written to the terminal.
      */
     private BaseInputConnection mInputConnection;
+
+    /**
+     * True while {@link InputConnection#finishComposingText()} is flushing already-typed composing
+     * text so latched ExtraKeys modifiers ({@code CTRL}/{@code ALT}/{@code SHIFT}) are preserved
+     * for the subsequent key event (e.g. {@code ExtraKeys SHIFT + Enter}) instead of being consumed
+     * by or applied to the previously composed word.
+     */
+    private boolean mIsFinishingComposingText;
 
     /**
      * The cursor update mode last requested by the IME via
@@ -498,7 +507,12 @@ public final class TerminalView extends View {
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "IME: finishComposingText()");
                 super.finishComposingText();
 
-                sendTextToTerminal(getEditable());
+                mIsFinishingComposingText = true;
+                try {
+                    sendTextToTerminal(getEditable());
+                } finally {
+                    mIsFinishingComposingText = false;
+                }
                 getEditable().clear();
                 return true;
             }
@@ -530,15 +544,22 @@ public final class TerminalView extends View {
             }
 
             void sendTextToTerminal(CharSequence text) {
-                // Ctrl may be latched on the extra keys bar, and reading it clears it, so it is read
-                // once here and passed on to inputCodePoint() below.
-                final boolean controlDown = mClient.readControlKey();
+                final int textLengthInChars = text.length();
+                if (textLengthInChars == 0) return;
+
+                // Modifiers may be latched on the extra keys bar, and reading them clears them, so they
+                // are read once here and passed on to inputCodePoint() below. Do not consume latched
+                // modifiers when flushing an already-typed composition in finishComposingText(), or
+                // ExtraKeys SHIFT/CTRL/ALT meant for the following key (e.g. Shift+Enter) is lost.
+                final boolean consumeModifiers = !mIsFinishingComposingText;
+                final boolean controlDown = consumeModifiers && mClient.readControlKey();
                 // The client may want to act on the selected text, like copying it on Ctrl+C, and it
                 // has to get the chance before the selection is cleared below. Key events get the
                 // same chance in onKeyDown().
-                if (isSelectingText() && mClient.onTextInputWhileSelectingText(text, controlDown)) return;
+                if (consumeModifiers && isSelectingText() && mClient.onTextInputWhileSelectingText(text, controlDown)) return;
+                final boolean altDown = consumeModifiers && mClient.readAltKey();
+                final boolean shiftDown = consumeModifiers && mClient.readShiftKey();
                 stopTextSelectionMode();
-                final int textLengthInChars = text.length();
                 for (int i = 0; i < textLengthInChars; i++) {
                     char firstChar = text.charAt(i);
                     int codePoint;
@@ -553,20 +574,22 @@ public final class TerminalView extends View {
                         codePoint = firstChar;
                     }
 
+                    int unshiftedCodePoint = codePoint;
                     // Check onKeyDown() for details.
-                    if (mClient.readShiftKey())
+                    if (shiftDown)
                         codePoint = Character.toUpperCase(codePoint);
 
                     boolean ctrlHeld = false;
-                    if (codePoint <= 31 && codePoint != 27) {
-                        if (codePoint == '\n') {
-                            // The AOSP keyboard and descendants seems to send \n as text when the enter key is pressed,
-                            // instead of a key event like most other keyboard apps. A terminal expects \r for the enter
-                            // key (although when icrnl is enabled this doesn't make a difference - run 'stty -icrnl' to
-                            // check the behaviour).
-                            codePoint = '\r';
-                        }
-
+                    if (codePoint == '\n' || codePoint == '\r') {
+                        // The AOSP keyboard and descendants send \n as text when the enter key is pressed,
+                        // instead of a key event like most other keyboard apps. A terminal expects \r for
+                        // the enter key, and must not misclassify it as synthetic Ctrl+M under Kitty/modifyOtherKeys.
+                        codePoint = '\r';
+                        unshiftedCodePoint = '\r';
+                    } else if (codePoint == '\t') {
+                        // Preserve Tab as '\t' rather than converting it into synthetic Ctrl+I.
+                        unshiftedCodePoint = '\t';
+                    } else if (codePoint <= 31 && codePoint != 27) {
                         // E.g. penti keyboard for ctrl input.
                         ctrlHeld = true;
                         switch (codePoint) {
@@ -586,9 +609,10 @@ public final class TerminalView extends View {
                                 codePoint += 96;
                                 break;
                         }
+                        unshiftedCodePoint = codePoint;
                     }
 
-                    inputCodePoint(KEY_EVENT_SOURCE_SOFT_KEYBOARD, codePoint, ctrlHeld || controlDown, false);
+                    inputCodePoint(KEY_EVENT_SOURCE_SOFT_KEYBOARD, codePoint, unshiftedCodePoint, ctrlHeld || controlDown, altDown, shiftDown);
                 }
             }
 
@@ -1440,19 +1464,24 @@ public final class TerminalView extends View {
             return false;
         }
 
+        int unshiftedCodePoint = event.getUnicodeChar(0) & KeyCharacterMap.COMBINING_ACCENT_MASK;
+
         int oldCombiningAccent = mCombiningAccent;
         if ((result & KeyCharacterMap.COMBINING_ACCENT) != 0) {
             // If entered combining accent previously, write it out:
             if (mCombiningAccent != 0)
-                inputCodePoint(event.getDeviceId(), mCombiningAccent, controlDown, leftAltDown);
+                inputCodePoint(event.getDeviceId(), mCombiningAccent, mCombiningAccent, controlDown, leftAltDown, shiftDown);
             mCombiningAccent = result & KeyCharacterMap.COMBINING_ACCENT_MASK;
         } else {
             if (mCombiningAccent != 0) {
                 int combinedChar = KeyCharacterMap.getDeadChar(mCombiningAccent, result);
-                if (combinedChar > 0) result = combinedChar;
+                if (combinedChar > 0) {
+                    result = combinedChar;
+                    unshiftedCodePoint = combinedChar;
+                }
                 mCombiningAccent = 0;
             }
-            inputCodePoint(event.getDeviceId(), result, controlDown, leftAltDown);
+            inputCodePoint(event.getDeviceId(), result, unshiftedCodePoint, controlDown, leftAltDown, shiftDown);
         }
 
         if (mCombiningAccent != oldCombiningAccent) invalidate();
@@ -1461,6 +1490,11 @@ public final class TerminalView extends View {
     }
 
     public void inputCodePoint(int eventSource, int codePoint, boolean controlDownFromEvent, boolean leftAltDownFromEvent) {
+        inputCodePoint(eventSource, codePoint, codePoint, controlDownFromEvent, leftAltDownFromEvent, false);
+    }
+
+    public void inputCodePoint(int eventSource, int codePoint, int unshiftedCodePoint,
+                               boolean controlDownFromEvent, boolean leftAltDownFromEvent, boolean shiftDownFromEvent) {
         if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
             mClient.logInfo(LOG_TAG, "inputCodePoint(eventSource=" + eventSource + ", codePoint=" + codePoint + ", controlDownFromEvent=" + controlDownFromEvent + ", leftAltDownFromEvent="
                 + leftAltDownFromEvent + ")");
@@ -1475,10 +1509,41 @@ public final class TerminalView extends View {
         if (mEmulator != null)
             mEmulator.setCursorBlinkState(true);
 
-        final boolean controlDown = controlDownFromEvent || mClient.readControlKey();
-        final boolean altDown = leftAltDownFromEvent || mClient.readAltKey();
+        final boolean consumeModifiers = !mIsFinishingComposingText;
+        final boolean controlDown = controlDownFromEvent || (consumeModifiers && mClient.readControlKey());
+        final boolean altDown = leftAltDownFromEvent || (consumeModifiers && mClient.readAltKey());
 
         if (mClient.onCodePoint(codePoint, controlDown, mTermSession)) return;
+
+        final boolean shiftDown = shiftDownFromEvent || (consumeModifiers && mClient.readShiftKey());
+        if (!shiftDownFromEvent && shiftDown && codePoint >= 32) {
+            codePoint = Character.toUpperCase(codePoint);
+        }
+
+        // Normalize bluetooth keyboard modifier characters before modern or legacy encoding.
+        if (eventSource > KEY_EVENT_SOURCE_SOFT_KEYBOARD) {
+            switch (codePoint) {
+                case 0x02DC: // SMALL TILDE.
+                    codePoint = 0x007E; // TILDE (~).
+                    break;
+                case 0x02CB: // MODIFIER LETTER GRAVE ACCENT.
+                    codePoint = 0x0060; // GRAVE ACCENT (`).
+                    break;
+                case 0x02C6: // MODIFIER LETTER CIRCUMFLEX ACCENT.
+                    codePoint = 0x005E; // CIRCUMFLEX ACCENT (^).
+                    break;
+            }
+        }
+
+        if (mEmulator != null) {
+            String protocolEncoded = KeyboardProtocol.encodeCodePoint(
+                codePoint, unshiftedCodePoint, controlDown, altDown, shiftDown,
+                mEmulator.getKittyKeyboardFlags(), mEmulator.getModifyOtherKeysMode());
+            if (protocolEncoded != null) {
+                mTermSession.write(protocolEncoded);
+                return;
+            }
+        }
 
         if (controlDown) {
             if (codePoint >= 'a' && codePoint <= 'z') {
@@ -1505,24 +1570,6 @@ public final class TerminalView extends View {
         }
 
         if (codePoint > -1) {
-            // If not virtual or soft keyboard.
-            if (eventSource > KEY_EVENT_SOURCE_SOFT_KEYBOARD) {
-                // Work around bluetooth keyboards sending funny unicode characters instead
-                // of the more normal ones from ASCII that terminal programs expect - the
-                // desire to input the original characters should be low.
-                switch (codePoint) {
-                    case 0x02DC: // SMALL TILDE.
-                        codePoint = 0x007E; // TILDE (~).
-                        break;
-                    case 0x02CB: // MODIFIER LETTER GRAVE ACCENT.
-                        codePoint = 0x0060; // GRAVE ACCENT (`).
-                        break;
-                    case 0x02C6: // MODIFIER LETTER CIRCUMFLEX ACCENT.
-                        codePoint = 0x005E; // CIRCUMFLEX ACCENT (^).
-                        break;
-                }
-            }
-
             // If left alt, send escape before the code point to make e.g. Alt+B and Alt+F work in readline:
             mTermSession.writeCodePoint(altDown, codePoint);
         }
@@ -1538,7 +1585,8 @@ public final class TerminalView extends View {
             return true;
 
         TerminalEmulator term = mTermSession.getEmulator();
-        String code = KeyHandler.getCode(keyCode, keyMod, term.isCursorKeysApplicationMode(), term.isKeypadApplicationMode());
+        String code = KeyHandler.getCode(keyCode, keyMod, term.isCursorKeysApplicationMode(), term.isKeypadApplicationMode(),
+            term.getKittyKeyboardFlags(), term.getModifyOtherKeysMode());
         if (code == null) return false;
         mTermSession.write(code);
         return true;

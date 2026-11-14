@@ -154,8 +154,16 @@ public final class KeyHandler {
     }
 
     public static String getCode(int keyCode, int keyMode, boolean cursorApp, boolean keypadApplication) {
+        return getCode(keyCode, keyMode, cursorApp, keypadApplication, 0, 0);
+    }
+
+    public static String getCode(int keyCode, int keyMode, boolean cursorApp, boolean keypadApplication,
+                                 int kittyFlags, int modifyOtherKeysMode) {
         boolean numLockOn = (keyMode & KEYMOD_NUM_LOCK) != 0;
         keyMode &= ~KEYMOD_NUM_LOCK;
+        boolean ctrl = (keyMode & KEYMOD_CTRL) != 0;
+        boolean alt = (keyMode & KEYMOD_ALT) != 0;
+        boolean shift = (keyMode & KEYMOD_SHIFT) != 0;
         switch (keyCode) {
             case KEYCODE_DPAD_CENTER:
                 return "\015";
@@ -218,8 +226,10 @@ public final class KeyHandler {
                 return "\033[34~"; // Pause/Break
 
             case KEYCODE_ESCAPE:
-            case KEYCODE_BACK:
-                return "\033";
+            case KEYCODE_BACK: {
+                String encoded = KeyboardProtocol.encodeSpecialKey(27, ctrl, alt, shift, kittyFlags, modifyOtherKeysMode);
+                return encoded != null ? encoded : "\033";
+            }
 
             case KEYCODE_INSERT:
                 return transformForModifiers("\033[2", keyMode, '~');
@@ -230,10 +240,13 @@ public final class KeyHandler {
                 return transformForModifiers("\033[5", keyMode, '~');
             case KEYCODE_PAGE_DOWN:
                 return transformForModifiers("\033[6", keyMode, '~');
-            case KEYCODE_DEL:
+            case KEYCODE_DEL: {
+                String encoded = KeyboardProtocol.encodeSpecialKey(127, ctrl, alt, shift, kittyFlags, modifyOtherKeysMode);
+                if (encoded != null) return encoded;
                 String prefix = ((keyMode & KEYMOD_ALT) == 0) ? "" : "\033";
                 // Just do what xterm and gnome-terminal does:
                 return prefix + (((keyMode & KEYMOD_CTRL) == 0) ? "\u007F" : "\u0008");
+            }
             case KEYCODE_NUM_LOCK:
                 if (keypadApplication) {
                     return "\033OP";
@@ -241,17 +254,31 @@ public final class KeyHandler {
                     return null;
                 }
             case KEYCODE_SPACE:
+                if (kittyFlags != 0 || modifyOtherKeysMode > 0) {
+                    return null;
+                }
                 // If ctrl is not down, return null so that it goes through normal input processing (which may e.g. cause a
                 // combining accent to be written):
                 return ((keyMode & KEYMOD_CTRL) == 0) ? null : "\0";
-            case KEYCODE_TAB:
+            case KEYCODE_TAB: {
+                String encoded = KeyboardProtocol.encodeSpecialKey(9, ctrl, alt, shift, kittyFlags, modifyOtherKeysMode);
+                if (encoded != null) return encoded;
                 // This is back-tab when shifted:
                 return (keyMode & KEYMOD_SHIFT) == 0 ? "\011" : "\033[Z";
-            case KEYCODE_ENTER:
+            }
+            case KEYCODE_ENTER: {
+                String encoded = KeyboardProtocol.encodeSpecialKey(13, ctrl, alt, shift, kittyFlags, modifyOtherKeysMode);
+                if (encoded != null) return encoded;
                 return ((keyMode & KEYMOD_ALT) == 0) ? "\r" : "\033\r";
+            }
 
-            case KEYCODE_NUMPAD_ENTER:
+            case KEYCODE_NUMPAD_ENTER: {
+                if (!keypadApplication) {
+                    String encoded = KeyboardProtocol.encodeSpecialKey(13, ctrl, alt, shift, kittyFlags, modifyOtherKeysMode);
+                    if (encoded != null) return encoded;
+                }
                 return keypadApplication ? transformForModifiers("\033O", keyMode, 'M') : "\n";
+            }
             case KEYCODE_NUMPAD_MULTIPLY:
                 return keypadApplication ? transformForModifiers("\033O", keyMode, 'j') : "*";
             case KEYCODE_NUMPAD_ADD:

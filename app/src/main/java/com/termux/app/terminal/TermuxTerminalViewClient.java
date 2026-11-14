@@ -490,7 +490,7 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
         // shortcuts are resolved here for it. Only `c` and `v` are checked, since reading the sticky
         // `Shift` of the bar clears it.
         if (ctrlDown && (codePoint == 'c' || codePoint == 'C' || codePoint == 'v' || codePoint == 'V') &&
-            performClipboardAction(resolveClipboardShortcut(codePoint, ctrlDown, readShiftKey(), false)))
+            performClipboardAction(resolveClipboardShortcut(codePoint, ctrlDown, Character.isUpperCase(codePoint) || readShiftKey(), false)))
             return true;
 
         if (mVirtualFnKeyDown) {

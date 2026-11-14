@@ -175,6 +175,10 @@ public final class TerminalEmulator {
     private static final int ESC_CSI_UNSUPPORTED_PARAMETER_BYTE = 22;
     /** Escape processing: ESC [ <parameter bytes> <intermediate bytes> */
     private static final int ESC_CSI_UNSUPPORTED_INTERMEDIATE_BYTE = 23;
+    /** Escape processing: ESC [ < */
+    private static final int ESC_CSI_LESSTHAN = 24;
+    /** Escape processing: ESC [ = */
+    private static final int ESC_CSI_EQUALS = 25;
 
     /** The number of parameter arguments including colon separated sub-parameters. */
     private static final int MAX_ESCAPE_PARAMETERS = 32;
@@ -264,6 +268,9 @@ public final class TerminalEmulator {
     final TerminalBuffer mAltBuffer;
     /** The current screen buffer, pointing at either {@link #mMainBuffer} or {@link #mAltBuffer}. */
     private TerminalBuffer mScreen;
+
+    /** Kitty Keyboard Protocol and xterm modifyOtherKeys state machine. */
+    private final KeyboardProtocol mKeyboardProtocol = new KeyboardProtocol();
 
     /** The terminal session this emulator is bound to. */
     private final TerminalOutput mSession;
@@ -694,6 +701,16 @@ public final class TerminalEmulator {
         return isDecsetInternalBitSet(DECSET_BIT_APPLICATION_CURSOR_KEYS);
     }
 
+    /** Active Kitty Keyboard Protocol progressive enhancement flags on the current screen buffer. */
+    public int getKittyKeyboardFlags() {
+        return mKeyboardProtocol.getKittyFlags(isAlternateBufferActive());
+    }
+
+    /** Active xterm {@code modifyOtherKeys} level (0, 1, or 2). */
+    public int getModifyOtherKeysMode() {
+        return mKeyboardProtocol.getModifyOtherKeysMode();
+    }
+
     /** If mouse events are being sent as escape codes to the terminal. */
     public boolean isMouseTrackingActive() {
         return (mCurrentDecSetFlags & MOUSE_TRACKING_BITS) != 0;
@@ -947,6 +964,12 @@ public final class TerminalEmulator {
                         break;
                     case ESC_CSI_BIGGERTHAN:
                         doCsiBiggerThan(b);
+                        break;
+                    case ESC_CSI_LESSTHAN:
+                        doCsiLessThan(b);
+                        break;
+                    case ESC_CSI_EQUALS:
+                        doCsiEquals(b);
                         break;
                     case ESC_CSI_DOLLAR:
                         boolean originMode = isDecsetInternalBitSet(DECSET_BIT_ORIGIN_MODE);
@@ -1827,6 +1850,20 @@ public final class TerminalEmulator {
             case '$':
                 continueSequence(ESC_CSI_QUESTIONMARK_ARG_DOLLAR);
                 return;
+            case 'u': // Kitty Keyboard Protocol query: CSI ? u -> CSI ? flags u
+                if (mArgIndex == 0 && mArgs[0] == -1) {
+                    mSession.write(String.format(Locale.US, "\033[?%du", getKittyKeyboardFlags()));
+                } else {
+                    unknownSequence(b);
+                }
+                break;
+            case 'm': // xterm modifyResource query: CSI ? Pp m -> CSI > Pp ; Pv m
+                if (mArgIndex == 0 && mArgs[0] == 4) {
+                    mSession.write(String.format(Locale.US, "\033[>4;%dm", mKeyboardProtocol.getModifyOtherKeysMode()));
+                } else {
+                    unknownSequence(b);
+                }
+                break;
             default:
                 parseArg(b);
         }
@@ -1920,6 +1957,8 @@ public final class TerminalEmulator {
                     // Clear new screen if alt buffer:
                     if (newScreen == mAltBuffer)
                         newScreen.blockSet(0, 0, mColumns, mRows, ' ', getStyle());
+                    // Reset alternate-screen Kitty keyboard stack on entry/exit so crashed TUIs cannot leak state:
+                    mKeyboardProtocol.clearAltScreenState();
                 }
                 break;
             }
@@ -2004,11 +2043,48 @@ public final class TerminalEmulator {
                 // (1) enables this feature for keys except for those with well-known behavior, e.g., Tab, Backarrow and
                 // some special control character cases, e.g., Control-Space to make a NUL.
                 // (2) enables this feature for keys including the exceptions listed.
-                Logger.logError(mClient, LOG_TAG, "(ignored) CSI > MODIFY RESOURCE: " + getArg0(-1) + " to " + getArg1(-1));
+                int resource = mArgs[0];
+                if (resource == 4) {
+                    mKeyboardProtocol.setModifyOtherKeysMode(getArg(1, 0, false));
+                } else if (mArgIndex == 0 && resource == -1) {
+                    mKeyboardProtocol.setModifyOtherKeysMode(0);
+                } else {
+                    Logger.logError(mClient, LOG_TAG, "(ignored) CSI > MODIFY RESOURCE: " + getArg0(-1) + " to " + getArg1(-1));
+                }
+                break;
+            case 'q': // XTVERSION: CSI > q or CSI > 0 q -> DCS > | Termux ST
+                if (getArg(0, 0, false) == 0) {
+                    mSession.write("\033P>|Termux\033\\");
+                } else {
+                    unknownSequence(b);
+                }
+                break;
+            case 'u': // Kitty Keyboard Protocol push: CSI > flags u
+                mKeyboardProtocol.pushKittyFlags(isAlternateBufferActive(), getArg(0, 0, false));
                 break;
             default:
                 parseArg(b);
                 break;
+        }
+    }
+
+    private void doCsiLessThan(int b) {
+        if ((b >= '0' && b <= '9') || b == ';' || b == ':') {
+            parseArg(b);
+        } else if (b == 'u') { // Kitty Keyboard Protocol pop: CSI < count u
+            mKeyboardProtocol.popKittyFlags(isAlternateBufferActive(), getArg0(1));
+        } else {
+            doCsiUnsupportedParameterOrIntermediateByte(b);
+        }
+    }
+
+    private void doCsiEquals(int b) {
+        if ((b >= '0' && b <= '9') || b == ';' || b == ':') {
+            parseArg(b);
+        } else if (b == 'u') { // Kitty Keyboard Protocol set in-place: CSI = flags ; mode u
+            mKeyboardProtocol.setKittyFlags(isAlternateBufferActive(), getArg(0, 0, false), getArg(1, 1, false));
+        } else {
+            doCsiUnsupportedParameterOrIntermediateByte(b);
         }
     }
 
@@ -2358,8 +2434,18 @@ public final class TerminalEmulator {
                 continueSequence(ESC_CSI_BIGGERTHAN);
                 break;
             case '<': // "Esc [ <" -- start of a private parameter byte
+                if (mArgIndex == 0 && mArgs[0] == -1) {
+                    continueSequence(ESC_CSI_LESSTHAN);
+                } else {
+                    continueSequence(ESC_CSI_UNSUPPORTED_PARAMETER_BYTE);
+                }
+                break;
             case '=': // "Esc [ =" -- start of a private parameter byte
-                continueSequence(ESC_CSI_UNSUPPORTED_PARAMETER_BYTE);
+                if (mArgIndex == 0 && mArgs[0] == -1) {
+                    continueSequence(ESC_CSI_EQUALS);
+                } else {
+                    continueSequence(ESC_CSI_UNSUPPORTED_PARAMETER_BYTE);
+                }
                 break;
             case '`': // Horizontal position absolute (HPA - http://www.vt100.net/docs/vt510-rm/HPA).
                 setCursorColRespectingOriginMode(getArg0(1) - 1);
@@ -3612,6 +3698,7 @@ public final class TerminalEmulator {
         clearTerminalControlArgs();
         clearOscTypeVariables();
         mITermImage = null;
+        mKeyboardProtocol.reset();
     }
 
     public String getSelectedText(int x1, int y1, int x2, int y2) {
