@@ -75,4 +75,29 @@ public class DecSetTest extends TerminalTestCase {
 		enterString("\033[?7hhij").assertLinesAre("abh", "ij ", "   ");
 	}
 
+	/** DECSET 1004 focus in/out event reporting with transition deduplication. */
+	public void testFocusEventsDecset1004() {
+		withTerminalSized(5, 3);
+		mTerminal.reportFocusChange(true);
+		assertEquals("", mOutput.getOutputAndClear());
+
+		enterString("\033[?1004h");
+		assertTrue(mTerminal.isSendFocusEventsEnabled());
+		// Redundant focus=true does not emit duplicate CSI I:
+		mTerminal.reportFocusChange(true);
+		assertEquals("", mOutput.getOutputAndClear());
+
+		mTerminal.reportFocusChange(false);
+		assertEquals("\033[O", mOutput.getOutputAndClear());
+		mTerminal.reportFocusChange(false);
+		assertEquals("", mOutput.getOutputAndClear());
+
+		mTerminal.reportFocusChange(true);
+		assertEquals("\033[I", mOutput.getOutputAndClear());
+
+		enterString("\033[?1004l");
+		mTerminal.reportFocusChange(false);
+		assertEquals("", mOutput.getOutputAndClear());
+	}
+
 }

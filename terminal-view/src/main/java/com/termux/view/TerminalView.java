@@ -117,6 +117,8 @@ public final class TerminalView extends View {
     private boolean mMouseModifiedTapPending;
     private boolean mMousePrimaryTapPending;
     private float mMouseDownX, mMouseDownY;
+    private int mLastHoverCol = -1, mLastHoverRow = -1;
+    private int mLastDragCol = -1, mLastDragRow = -1;
     private final float mTouchSlop;
 
     private final Runnable mHoldStage1Runnable = this::onHoldStage1Timeout;
@@ -407,6 +409,10 @@ public final class TerminalView extends View {
 
         cancelSingleFingerHold(true);
         stopTextSelectionMode();
+        if (mEmulator != null) {
+            mEmulator.reportFocusChange(false);
+        }
+        resetMouseMotionState();
 
         mTermSession = session;
         mEmulator = null;
@@ -799,14 +805,38 @@ public final class TerminalView extends View {
                 mMouseScrollStartY = y;
             }
         }
-        mEmulator.sendMouseEvent(button, x, y, pressed);
+        dispatchMouseEventAtCell(button, x, y, pressed);
     }
 
     /** Send a single mouse event at a view-relative pixel position. */
     void sendMouseEventCodeAt(int button, float x, float y, boolean pressed) {
         int column = (int) (x / mRenderer.mFontWidth) + 1;
         int row = (int) ((y - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing) + 1;
-        mEmulator.sendMouseEvent(button, column, row, pressed);
+        dispatchMouseEventAtCell(button, column, row, pressed);
+    }
+
+    /** Like xterm, only report left button drag motion when the pointer moves to a different cell. */
+    private void dispatchMouseEventAtCell(int button, int column, int row, boolean pressed) {
+        int clampedCol = Math.max(1, Math.min(mEmulator.mColumns, column));
+        int clampedRow = Math.max(1, Math.min(mEmulator.mRows, row));
+        if (button == TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED) {
+            if (clampedCol == mLastDragCol && clampedRow == mLastDragRow) {
+                return;
+            }
+            mLastDragCol = clampedCol;
+            mLastDragRow = clampedRow;
+        } else if (button == TerminalEmulator.MOUSE_LEFT_BUTTON) {
+            mLastDragCol = pressed ? clampedCol : -1;
+            mLastDragRow = pressed ? clampedRow : -1;
+        }
+        mEmulator.sendMouseEvent(button, clampedCol, clampedRow, pressed);
+    }
+
+    private void resetMouseMotionState() {
+        mLastHoverCol = -1;
+        mLastHoverRow = -1;
+        mLastDragCol = -1;
+        mLastDragRow = -1;
     }
 
     /**
@@ -1106,11 +1136,25 @@ public final class TerminalView extends View {
     /** Overriding {@link View#onGenericMotionEvent(MotionEvent)}. */
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
-        if (mEmulator != null && event.isFromSource(InputDevice.SOURCE_MOUSE) && event.getAction() == MotionEvent.ACTION_SCROLL) {
-            // Handle mouse wheel scrolling.
-            boolean up = event.getAxisValue(MotionEvent.AXIS_VSCROLL) > 0.0f;
-            doScroll(event, up ? -3 : 3);
-            return true;
+        if (mEmulator != null && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_SCROLL) {
+                // Handle mouse wheel scrolling.
+                boolean up = event.getAxisValue(MotionEvent.AXIS_VSCROLL) > 0.0f;
+                doScroll(event, up ? -3 : 3);
+                return true;
+            } else if (action == MotionEvent.ACTION_HOVER_MOVE && mEmulator.isMouseTrackingAnyEvent()) {
+                // DECSET 1003: report hover motion, once per cell change.
+                int[] colAndRow = getColumnAndRow(event, false);
+                int col = Math.max(1, Math.min(mEmulator.mColumns, colAndRow[0] + 1));
+                int row = Math.max(1, Math.min(mEmulator.mRows, colAndRow[1] + 1));
+                if (col != mLastHoverCol || row != mLastHoverRow) {
+                    mLastHoverCol = col;
+                    mLastHoverRow = row;
+                    mEmulator.sendMouseEvent(TerminalEmulator.MOUSE_MOTION_NO_BUTTON, col, row, true);
+                }
+                return true;
+            }
         }
         return false;
     }
@@ -1547,6 +1591,15 @@ public final class TerminalView extends View {
         return true;
     }
 
+    /** Report window focus changes to the terminal for DECSET 1004 focus events. */
+    @Override
+    public void onWindowFocusChanged(boolean hasWindowFocus) {
+        super.onWindowFocusChanged(hasWindowFocus);
+        if (mEmulator != null) {
+            mEmulator.reportFocusChange(hasWindowFocus);
+        }
+    }
+
     /**
      * This is called during layout when the size of this view has changed. If you were just added to the view
      * hierarchy, you're called with the old values of 0.
@@ -1580,6 +1633,7 @@ public final class TerminalView extends View {
             // maintained after opening/closing soft keyboard.
             int topRow = 0;
             if (mEmulator != null) {
+                mEmulator.reportFocusChange(hasWindowFocus());
                 int rowsInHistory = mEmulator.getScreen().getActiveTranscriptRows();
                 int cachedTopRow = mEmulator.getTopRow();
                 if (cachedTopRow >= -rowsInHistory) {
@@ -2053,6 +2107,7 @@ public final class TerminalView extends View {
 
         cancelSingleFingerHold(true);
         mMouseModifiedTapPending = false;
+        resetMouseMotionState();
         releaseForwardedButton();
         mMultiFingerTapDetector.onCancel();
         mMultiFingerSwipeDetector.onCancel();
