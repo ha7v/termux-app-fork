@@ -106,21 +106,17 @@ public class TerminalBitmap {
     private static int initMaxBitmapSize() {
         // Synced with `RecordingCanvas.MAX_BITMAP_SIZE`.
         // - https://cs.android.com/android/platform/superproject/+/android-16.0.0_r1:frameworks/base/graphics/java/android/graphics/RecordingCanvas.java;l=42-50
-        int defaultSize =
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM ?
-                    150 * 1024 * 1024 : // 150 MB
-                    100 * 1024 * 1024;  // 100 MB
-
-        Properties systemProperties = AndroidUtils.getSystemProperties(LOG_TAG);
-        String maxTextureSizeString = systemProperties.getProperty("ro.hwui.max_texture_allocation_size");
-
-        if (maxTextureSizeString == null) return defaultSize;
-
+        int defaultSize = 100 * 1024 * 1024; // 100 MB
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                defaultSize = 150 * 1024 * 1024; // 150 MB
+            }
+            Properties systemProperties = AndroidUtils.getSystemProperties(LOG_TAG);
+            String maxTextureSizeString = systemProperties.getProperty("ro.hwui.max_texture_allocation_size");
+            if (maxTextureSizeString == null) return defaultSize;
             int maxTextureSize = Integer.parseInt(maxTextureSizeString);
             return maxTextureSize > 0 ? maxTextureSize : defaultSize;
-        }
-        catch (Exception e) {
+        } catch (Throwable ignored) {
             return defaultSize;
         }
     }

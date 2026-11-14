@@ -1,7 +1,9 @@
 package com.termux.terminal;
 
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.HashMap;
 
@@ -44,6 +46,9 @@ public final class TerminalBuffer {
 
     /** The map for bitmap number to the {@link TerminalBitmap} loaded in the terminal. */
     private final HashMap<Integer, TerminalBitmap> mTerminalBitmaps;
+
+    /** Bounded deduplicated table of {@code OSC 8} hyperlinks live in this buffer. */
+    private final HyperlinkTable mHyperlinkTable = new HyperlinkTable();
 
     /** The time since last garbage collection for all the {@link TerminalBitmap} that are loaded in the terminal. */
     private long mTerminalBitmapsLastGC;
@@ -359,7 +364,7 @@ public final class TerminalBuffer {
                 TerminalRow oldLine = oldLines[internalOldRow];
                 boolean cursorAtThisRow = externalOldRow == oldCursorRow;
                 // The cursor may only be on a non-null line, which we should not skip:
-                if (oldLine == null || (!(!newCursorPlaced && cursorAtThisRow)) && oldLine.isBlank()) {
+                if (oldLine == null || (!(!newCursorPlaced && cursorAtThisRow)) && oldLine.isBlank() && oldLine.mSemanticFlags == 0) {
                     skippedBlankLines++;
                     continue;
                 } else if (skippedBlankLines > 0) {
@@ -388,15 +393,23 @@ public final class TerminalBuffer {
                             lastNonSpaceIndex = i + 1;
                 }
 
+                if (oldLine.mSemanticFlags != 0) {
+                    allocateFullLineIfNecessary(externalToInternalRow(currentOutputExternalRow)).mSemanticFlags |= oldLine.mSemanticFlags;
+                }
+
                 int currentOldCol = 0;
                 long styleAtCol = 0;
+                short hyperlinkAtCol = 0;
                 for (int i = 0; i < lastNonSpaceIndex; i++) {
                     // Note that looping over java character, not cells.
                     char c = oldLine.mText[i];
                     int codePoint = (Character.isHighSurrogate(c)) ? Character.toCodePoint(c, oldLine.mText[++i]) : c;
                     int displayWidth = WcWidth.width(codePoint);
                     // Use the last style if this is a zero-width character:
-                    if (displayWidth > 0) styleAtCol = oldLine.getStyle(currentOldCol);
+                    if (displayWidth > 0) {
+                        styleAtCol = oldLine.getStyle(currentOldCol);
+                        hyperlinkAtCol = oldLine.getHyperlinkId(currentOldCol);
+                    }
 
                     // Line wrap as necessary:
                     if (currentOutputExternalColumn + displayWidth > mColumns) {
@@ -412,7 +425,7 @@ public final class TerminalBuffer {
 
                     int offsetDueToCombiningChar = ((displayWidth <= 0 && currentOutputExternalColumn > 0) ? 1 : 0);
                     int outputColumn = currentOutputExternalColumn - offsetDueToCombiningChar;
-                    setChar(outputColumn, currentOutputExternalRow, codePoint, styleAtCol);
+                    setChar(outputColumn, currentOutputExternalRow, codePoint, styleAtCol, hyperlinkAtCol);
 
                     if (displayWidth > 0) {
                         if (oldCursorRow == externalOldRow && oldCursorColumn == currentOldCol) {
@@ -497,7 +510,11 @@ public final class TerminalBuffer {
             if(mLines[blankRow].mHasTerminalBitmap) {
                 removeScrolledOutTerminalBitmaps(blankRow);
             }
+            boolean evictedHadHyperlinks = mLines[blankRow].mHyperlinkIds != null;
             mLines[blankRow].clear(style);
+            if (evictedHadHyperlinks && mHyperlinkTable.size() >= HyperlinkTable.MAX_HYPERLINKS / 2) {
+                gcHyperlinks();
+            }
         }
     }
 
@@ -549,10 +566,14 @@ public final class TerminalBuffer {
     }
 
     public void setChar(int column, int row, int codePoint, long style) {
+        setChar(column, row, codePoint, style, (short) 0);
+    }
+
+    public void setChar(int column, int row, int codePoint, long style, short hyperlinkId) {
         if (row  < 0 || row >= mScreenRows || column < 0 || column >= mColumns)
             throw new IllegalArgumentException("TerminalBuffer.setChar(): row=" + row + ", column=" + column + ", mScreenRows=" + mScreenRows + ", mColumns=" + mColumns);
         row = externalToInternalRow(row);
-        allocateFullLineIfNecessary(row).setChar(column, codePoint, style);
+        allocateFullLineIfNecessary(row).setChar(column, codePoint, style, hyperlinkId);
     }
 
     public long getStyleAt(int externalRow, int column) {
@@ -593,6 +614,193 @@ public final class TerminalBuffer {
         }
         mActiveTranscriptRows = 0;
         clearTerminalBitmaps();
+        gcHyperlinks();
+    }
+
+    /** Register an {@code OSC 8} URI in this buffer's hyperlink table, running GC or FIFO eviction if needed. */
+    public short registerHyperlink(String uri) {
+        short id = mHyperlinkTable.registerOrSignalFull(uri);
+        if (id == -1) {
+            gcHyperlinks();
+            id = mHyperlinkTable.registerOrSignalFull(uri);
+        }
+        if (id == -1 && evictOldestHyperlink()) {
+            id = mHyperlinkTable.registerOrSignalFull(uri);
+        }
+        return id > 0 ? id : 0;
+    }
+
+    private boolean evictOldestHyperlink() {
+        short victimId = 0;
+        for (int extRow = -mActiveTranscriptRows; extRow < mScreenRows && victimId == 0; extRow++) {
+            TerminalRow line = mLines[externalToInternalRow(extRow)];
+            if (line == null || line.mHyperlinkIds == null) continue;
+            for (int col = 0; col < line.mHyperlinkIds.length; col++) {
+                if (line.mHyperlinkIds[col] > 0) {
+                    victimId = line.mHyperlinkIds[col];
+                    break;
+                }
+            }
+        }
+        if (victimId <= 0) return false;
+
+        for (int extRow = -mActiveTranscriptRows; extRow < mScreenRows; extRow++) {
+            TerminalRow line = mLines[externalToInternalRow(extRow)];
+            if (line == null || line.mHyperlinkIds == null) continue;
+            for (int col = 0; col < line.mHyperlinkIds.length; col++) {
+                if (line.mHyperlinkIds[col] == victimId) {
+                    line.mHyperlinkIds[col] = 0;
+                }
+            }
+        }
+        mHyperlinkTable.removeId(victimId);
+        return true;
+    }
+
+    /** Return the {@code OSC 8} hyperlink URI at {@code (column, externalRow)}, or {@code null}. */
+    public String getHyperlinkAt(int column, int externalRow) {
+        if (column < 0 || column >= mColumns || externalRow < -mActiveTranscriptRows || externalRow >= mScreenRows) {
+            return null;
+        }
+        TerminalRow line = mLines[externalToInternalRow(externalRow)];
+        if (line == null) return null;
+        return mHyperlinkTable.getUri(line.getHyperlinkId(column));
+    }
+
+    /** Collect all {@code OSC 8} hyperlinks currently live in the transcript and visible screen. */
+    public LinkedHashSet<CharSequence> collectHyperlinks() {
+        LinkedHashSet<CharSequence> out = new LinkedHashSet<>();
+        if (mHyperlinkTable.isEmpty()) return out;
+        for (int extRow = -mActiveTranscriptRows; extRow < mScreenRows; extRow++) {
+            TerminalRow line = mLines[externalToInternalRow(extRow)];
+            mHyperlinkTable.collectRowHyperlinks(line, out);
+        }
+        return out;
+    }
+
+    /** Reclaim hyperlink table entries no longer referenced by any active transcript or screen row. */
+    public void gcHyperlinks() {
+        if (mHyperlinkTable.isEmpty()) return;
+        BitSet referenced = new BitSet(HyperlinkTable.MAX_HYPERLINKS + 1);
+        for (int extRow = -mActiveTranscriptRows; extRow < mScreenRows; extRow++) {
+            TerminalRow line = mLines[externalToInternalRow(extRow)];
+            if (line == null || line.mHyperlinkIds == null) continue;
+            short[] ids = line.mHyperlinkIds;
+            for (int col = 0; col < ids.length; col++) {
+                short id = ids[col];
+                if (id > 0) referenced.set(id);
+            }
+        }
+        mHyperlinkTable.retainOnly(referenced);
+    }
+
+    /** Record an {@code OSC 133} semantic flag on {@code externalRow}. */
+    public void addSemanticFlag(int externalRow, byte flag) {
+        if (externalRow < -mActiveTranscriptRows || externalRow >= mScreenRows) return;
+        allocateFullLineIfNecessary(externalToInternalRow(externalRow)).mSemanticFlags |= flag;
+    }
+
+    public byte getSemanticFlags(int externalRow) {
+        if (externalRow < -mActiveTranscriptRows || externalRow >= mScreenRows) return 0;
+        TerminalRow line = mLines[externalToInternalRow(externalRow)];
+        return line != null ? line.mSemanticFlags : 0;
+    }
+
+    /**
+     * Find the nearest row marked with {@link TerminalRow#SEMANTIC_PROMPT_START} ({@code OSC 133;A})
+     * strictly above ({@code upward == true}) or below ({@code upward == false}) {@code fromExternalRow}.
+     *
+     * @return the external row index, or {@code null} if none exists in that direction.
+     */
+    public Integer findPromptRow(int fromExternalRow, boolean upward) {
+        if (upward) {
+            int start = Math.min(mScreenRows - 1, fromExternalRow - 1);
+            for (int r = start; r >= -mActiveTranscriptRows; r--) {
+                if ((getSemanticFlags(r) & TerminalRow.SEMANTIC_PROMPT_START) != 0) {
+                    return r;
+                }
+            }
+        } else {
+            int start = Math.max(-mActiveTranscriptRows, fromExternalRow + 1);
+            for (int r = start; r < mScreenRows; r++) {
+                if ((getSemanticFlags(r) & TerminalRow.SEMANTIC_PROMPT_START) != 0) {
+                    return r;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Whether at least one {@code OSC 133;C} command-output boundary exists in the buffer. */
+    public boolean hasSemanticCommandOutput() {
+        for (int r = mScreenRows - 1; r >= -mActiveTranscriptRows; r--) {
+            if ((getSemanticFlags(r) & TerminalRow.SEMANTIC_OUTPUT_START) != 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Extract the text output of the most recent command delimited by {@code OSC 133;C} (output start)
+     * and {@code OSC 133;D} / {@code OSC 133;A} (command finished / next prompt).
+     *
+     * @return the command output string (possibly empty {@code ""} for zero-output commands), or
+     *         {@code null} if no {@code OSC 133;C} marker is present.
+     */
+    public String getLastCommandOutput() {
+        int cRow = Integer.MIN_VALUE;
+        for (int r = mScreenRows - 1; r >= -mActiveTranscriptRows; r--) {
+            if ((getSemanticFlags(r) & TerminalRow.SEMANTIC_OUTPUT_START) != 0) {
+                cRow = r;
+                break;
+            }
+        }
+        if (cRow == Integer.MIN_VALUE) return null;
+
+        byte cFlags = getSemanticFlags(cRow);
+        // Zero-line command where C, D, and next prompt A all occurred on the same row.
+        if ((cFlags & TerminalRow.SEMANTIC_COMMAND_FINISHED) != 0 &&
+            (cFlags & TerminalRow.SEMANTIC_PROMPT_START) != 0) {
+            return "";
+        }
+
+        // If 133;C was emitted inline on the prompt/command row before newline, output begins on cRow + 1.
+        int startRow = ((cFlags & (TerminalRow.SEMANTIC_PROMPT_START | TerminalRow.SEMANTIC_COMMAND_START)) != 0)
+            ? (cRow + 1) : cRow;
+        if (startRow >= mScreenRows) return "";
+
+        int endRow = Integer.MIN_VALUE;
+        for (int r = startRow; r < mScreenRows; r++) {
+            byte flags = getSemanticFlags(r);
+            if (r > cRow && (flags & TerminalRow.SEMANTIC_PROMPT_START) != 0) {
+                endRow = r - 1;
+                break;
+            }
+            if ((flags & TerminalRow.SEMANTIC_COMMAND_FINISHED) != 0) {
+                TerminalRow rowObj = mLines[externalToInternalRow(r)];
+                if (rowObj == null || rowObj.isBlank() || (r > cRow && (flags & TerminalRow.SEMANTIC_PROMPT_START) != 0)) {
+                    endRow = r - 1;
+                } else {
+                    endRow = r;
+                }
+                break;
+            }
+        }
+
+        if (endRow == Integer.MIN_VALUE) {
+            for (int r = mScreenRows - 1; r >= startRow; r--) {
+                TerminalRow rowObj = mLines[externalToInternalRow(r)];
+                if (rowObj != null && !rowObj.isBlank()) {
+                    endRow = r;
+                    break;
+                }
+            }
+            if (endRow == Integer.MIN_VALUE) return "";
+        }
+
+        if (endRow < startRow) return "";
+        return getSelectedText(0, startRow, mColumns, endRow, true, false);
     }
 
 

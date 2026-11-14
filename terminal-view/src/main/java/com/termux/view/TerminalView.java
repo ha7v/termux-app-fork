@@ -1613,6 +1613,34 @@ public final class TerminalView extends View {
     }
 
     /**
+     * Scroll the viewport to the previous or next {@code OSC 133;A} semantic shell prompt in the
+     * main buffer transcript. Returns {@code false} when the alternate screen is active or when no
+     * target prompt exists so TUI applications keep receiving the key combination unchanged.
+     */
+    public boolean jumpToPrompt(boolean previous) {
+        if (mEmulator == null || mEmulator.isAlternateBufferActive()) return false;
+        int rowsInHistory = mEmulator.getScreen().getActiveTranscriptRows();
+        if (rowsInHistory <= 0) return false;
+
+        if (previous) {
+            Integer promptRow = mEmulator.getScreen().findPromptRow(mTopRow, true);
+            if (promptRow == null) return false;
+            int clamped = Math.max(-rowsInHistory, Math.min(0, promptRow));
+            if (clamped == mTopRow) return false;
+            setTopRow(clamped);
+            if (!awakenScrollBars()) invalidate();
+            return true;
+        } else {
+            if (mTopRow >= 0) return false;
+            Integer promptRow = mEmulator.getScreen().findPromptRow(mTopRow, false);
+            int target = (promptRow == null || promptRow > 0) ? 0 : Math.max(-rowsInHistory, promptRow);
+            setTopRow(target);
+            if (!awakenScrollBars()) invalidate();
+            return true;
+        }
+    }
+
+    /**
      * Called when a key is released in the view.
      *
      * @param keyCode The keycode of the key which was released.

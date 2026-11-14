@@ -57,6 +57,15 @@ public final class TerminalRow {
     boolean mHasNonOneWidthOrSurrogateChars;
     /** If this row has a {@link TerminalBitmap}. Used for performance only. */
     public boolean mHasTerminalBitmap;
+    /** Lazy per-column {@code OSC 8} hyperlink IDs ({@code null} when row has no hyperlinks). */
+    short[] mHyperlinkIds;
+    /** {@code OSC 133} FinalTerm semantic shell integration flags for this row. */
+    byte mSemanticFlags;
+
+    public static final byte SEMANTIC_PROMPT_START = 1;
+    public static final byte SEMANTIC_COMMAND_START = 1 << 1;
+    public static final byte SEMANTIC_OUTPUT_START = 1 << 2;
+    public static final byte SEMANTIC_COMMAND_FINISHED = 1 << 3;
 
     /**
      * Cached cell-boundary cursor {@code (mCachedColumn -> mCachedCharIndex)} for {@code O(1)}
@@ -82,6 +91,9 @@ public final class TerminalRow {
         final int x2 = line.findStartOfColumn(sourceX2);
         boolean startingFromSecondHalfOfWideChar = (sourceX1 > 0 && line.wideDisplayCharacterStartingAt(sourceX1 - 1));
         final char[] sourceChars = (this == line) ? Arrays.copyOf(line.mText, line.mText.length) : line.mText;
+        final long[] sourceStyles = (this == line) ? Arrays.copyOf(line.mStyle, line.mStyle.length) : line.mStyle;
+        final short[] sourceLinks = (line.mHyperlinkIds == null) ? null :
+            ((this == line) ? Arrays.copyOf(line.mHyperlinkIds, line.mHyperlinkIds.length) : line.mHyperlinkIds);
         int latestNonCombiningWidth = 0;
         for (int i = x1; i < x2; i++) {
             char sourceChar = sourceChars[i];
@@ -97,7 +109,8 @@ public final class TerminalRow {
                 sourceX1 += latestNonCombiningWidth;
                 latestNonCombiningWidth = w;
             }
-            setChar(destinationX, codePoint, line.getStyle(sourceX1));
+            short linkId = (sourceLinks != null) ? sourceLinks[sourceX1] : 0;
+            setChar(destinationX, codePoint, sourceStyles[sourceX1], linkId);
         }
     }
 
@@ -209,6 +222,8 @@ public final class TerminalRow {
         mHasNonOneWidthOrSurrogateChars = false;
         mHasTerminalBitmap = false;
         mLineWrapBeforeWideChar = false;
+        mHyperlinkIds = null;
+        mSemanticFlags = 0;
         // Load-bearing: copyInterval() can re-enable the slow path via mHasNonOneWidthOrSurrogateChars |= ...
         // without re-anchoring the cache (only setChar() does), so a stale cursor must not survive a clear.
         mCachedColumn = 0;
@@ -217,6 +232,10 @@ public final class TerminalRow {
 
     // https://github.com/steven676/Android-Terminal-Emulator/commit/9a47042620bec87617f0b4f5d50568535668fe26
     public void setChar(int columnToSet, int codePoint, long style) {
+        setChar(columnToSet, codePoint, style, (short) 0);
+    }
+
+    public void setChar(int columnToSet, int codePoint, long style, short hyperlinkId) {
         if (columnToSet  < 0 || columnToSet >= mStyle.length)
             throw new IllegalArgumentException("TerminalRow.setChar(): columnToSet=" + columnToSet + ", codePoint=" + codePoint + ", style=" + style);
 
@@ -235,6 +254,7 @@ public final class TerminalRow {
                 mCachedColumn = mCachedCharIndex = Math.max(0, columnToSet - 1);
             } else {
                 mText[columnToSet] = (char) codePoint;
+                setHyperlinkId(columnToSet, hyperlinkId);
                 return;
             }
         }
@@ -248,10 +268,10 @@ public final class TerminalRow {
             if (wasExtraColForWideChar) columnToSet--;
         } else {
             // Check if we are overwriting the second half of a wide character starting at the previous column:
-            if (wasExtraColForWideChar) setChar(columnToSet - 1, ' ', style);
+            if (wasExtraColForWideChar) setChar(columnToSet - 1, ' ', style, (short) 0);
             // Check if we are overwriting the first half of a wide character starting at the next column:
             boolean overwritingWideCharInNextColumn = newCodePointDisplayWidth == 2 && wideDisplayCharacterStartingAt(columnToSet + 1);
-            if (overwritingWideCharInNextColumn) setChar(columnToSet + 1, ' ', style);
+            if (overwritingWideCharInNextColumn) setChar(columnToSet + 1, ' ', style, (short) 0);
         }
 
         char[] text = mText;
@@ -348,6 +368,32 @@ public final class TerminalRow {
                 System.arraycopy(text, newNextNextColumnIndex, text, newNextColumnIndex, mSpaceUsed - newNextNextColumnIndex);
                 mSpaceUsed -= nextLen;
             }
+        }
+
+        if (!newIsCombining) {
+            setHyperlinkId(columnToSet, hyperlinkId);
+            if (newCodePointDisplayWidth == 2) {
+                setHyperlinkId(columnToSet + 1, hyperlinkId);
+            } else if (oldCodePointDisplayWidth == 2 && columnToSet + 1 < mColumns) {
+                setHyperlinkId(columnToSet + 1, (short) 0);
+            }
+        }
+    }
+
+    public final short getHyperlinkId(int column) {
+        return (mHyperlinkIds != null && column >= 0 && column < mHyperlinkIds.length) ? mHyperlinkIds[column] : 0;
+    }
+
+    public final void setHyperlinkId(int column, short hyperlinkId) {
+        if (hyperlinkId == 0) {
+            if (mHyperlinkIds != null) {
+                mHyperlinkIds[column] = 0;
+            }
+        } else {
+            if (mHyperlinkIds == null) {
+                mHyperlinkIds = new short[mColumns];
+            }
+            mHyperlinkIds[column] = hyperlinkId;
         }
     }
 

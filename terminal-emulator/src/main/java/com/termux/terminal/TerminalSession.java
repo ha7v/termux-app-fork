@@ -302,6 +302,19 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Returns the shell's working directory or null if it was unavailable. */
     public String getCwd() {
+        if (mEmulator != null) {
+            String osc7Cwd = mEmulator.getWorkingDirectory();
+            if (osc7Cwd != null) {
+                try {
+                    File dir = new File(osc7Cwd);
+                    if (dir.isDirectory()) {
+                        return dir.getCanonicalPath();
+                    }
+                } catch (IOException | SecurityException ignored) {
+                    // Fall back to /proc/<pid>/cwd below.
+                }
+            }
+        }
         if (mShellPid < 1) {
             return null;
         }

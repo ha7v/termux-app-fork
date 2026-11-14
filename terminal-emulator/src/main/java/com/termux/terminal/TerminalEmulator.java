@@ -1,7 +1,10 @@
 package com.termux.terminal;
 
+import android.system.Os;
+import android.system.StructUtsname;
 import android.util.Base64;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Locale;
@@ -271,6 +274,16 @@ public final class TerminalEmulator {
 
     /** Kitty Keyboard Protocol and xterm modifyOtherKeys state machine. */
     private final KeyboardProtocol mKeyboardProtocol = new KeyboardProtocol();
+
+    /** Currently active {@code OSC 8} hyperlink ID on {@link #mScreen} ({@code 0} when inactive). */
+    private short mCurrentHyperlinkId = 0;
+
+    /** Last local working directory reported via {@code OSC 7}, or {@code null}. */
+    private String mWorkingDirectory = null;
+
+    /** Cached local kernel nodename for validating {@code OSC 7} hostnames. */
+    private static volatile String sCachedLocalHostname;
+    private static volatile boolean sLocalHostnameResolved;
 
     /** The terminal session this emulator is bound to. */
     private final TerminalOutput mSession;
@@ -709,6 +722,11 @@ public final class TerminalEmulator {
     /** Active xterm {@code modifyOtherKeys} level (0, 1, or 2). */
     public int getModifyOtherKeysMode() {
         return mKeyboardProtocol.getModifyOtherKeysMode();
+    }
+
+    /** Most recent local working directory reported via {@code OSC 7}, or {@code null}. */
+    public String getWorkingDirectory() {
+        return mWorkingDirectory;
     }
 
     /** If mouse events are being sent as escape codes to the terminal. */
@@ -1959,6 +1977,7 @@ public final class TerminalEmulator {
                         newScreen.blockSet(0, 0, mColumns, mRows, ' ', getStyle());
                     // Reset alternate-screen Kitty keyboard stack on entry/exit so crashed TUIs cannot leak state:
                     mKeyboardProtocol.clearAltScreenState();
+                    mCurrentHyperlinkId = 0;
                 }
                 break;
             }
@@ -2920,6 +2939,19 @@ public final class TerminalEmulator {
             case 2: // Change window title to T.
                 setTitle(textParameter);
                 break;
+            case 7: // Report shell working directory: OSC 7 ; file://[host]/path BEL/ST
+                mWorkingDirectory = parseOsc7WorkingDirectory(textParameter, getLocalHostname());
+                break;
+            case 8: { // Native hyperlink: OSC 8 ; params ; uri BEL/ST
+                int semiIdx = textParameter.indexOf(';');
+                if (semiIdx < 0) {
+                    unknownSequence(';');
+                    return;
+                }
+                String uri = textParameter.substring(semiIdx + 1);
+                mCurrentHyperlinkId = uri.isEmpty() ? 0 : mScreen.registerHyperlink(uri);
+                break;
+            }
             case 4:
                 // P s = 4 ; c ; spec → Change Color Number c to the color specified by spec. This can be a name or RGB
                 // specification as per XParseColor. Any number of c name pairs may be given. The color numbers correspond
@@ -3034,6 +3066,26 @@ public final class TerminalEmulator {
                 break;
             case 119: // Reset highlight color.
                 break;
+            case 133: // FinalTerm / semantic shell integration: OSC 133 ; A/B/C/D [; params]
+                if (!textParameter.isEmpty()) {
+                    switch (textParameter.charAt(0)) {
+                        case 'A':
+                            mScreen.addSemanticFlag(mCursorRow, TerminalRow.SEMANTIC_PROMPT_START);
+                            break;
+                        case 'B':
+                            mScreen.addSemanticFlag(mCursorRow, TerminalRow.SEMANTIC_COMMAND_START);
+                            break;
+                        case 'C':
+                            mScreen.addSemanticFlag(mCursorRow, TerminalRow.SEMANTIC_OUTPUT_START);
+                            break;
+                        case 'D':
+                            mScreen.addSemanticFlag(mCursorRow, TerminalRow.SEMANTIC_COMMAND_FINISHED);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                break;
             case 1337: // iTerm image
                 // - https://iterm2.com/documentation-images.html
                 // - https://iterm2.com/documentation-escape-codes.html
@@ -3136,11 +3188,12 @@ public final class TerminalEmulator {
                     }
                     break;
                 } else if (controlCommandPrefix.startsWith("ReportCellSize")) {
-                    mSession.write(String.format(Locale.ENGLISH, "\0331337;ReportCellSize=%d;%d\007", mCellHeightPixels, mCellWidthPixels));
+                    mSession.write(String.format(Locale.US, "\033]1337;ReportCellSize=%d;%d\007", mCellHeightPixels, mCellWidthPixels));
                 }
 
                 // Free image from memory for any non `MultipartFile=` related commands.
                 mITermImage = null;
+                break;
             default:
                 unknownParameter(value);
                 break;
@@ -3589,7 +3642,7 @@ public final class TerminalEmulator {
         // so was mCursorCol changed after the offsetDueToCombiningChar conditional by another thread?
         // TODO: Check if there are thread synchronization issues with mCursorCol and mCursorRow, possibly causing others bugs too.
         if (column < 0) column = 0;
-        mScreen.setChar(column, mCursorRow, codePoint, getStyle());
+        mScreen.setChar(column, mCursorRow, codePoint, getStyle(), mCurrentHyperlinkId);
 
         if (autoWrap && displayWidth > 0)
             mAboutToAutoWrap = (mCursorCol == mRightMargin - displayWidth);
@@ -3699,6 +3752,92 @@ public final class TerminalEmulator {
         clearOscTypeVariables();
         mITermImage = null;
         mKeyboardProtocol.reset();
+        mCurrentHyperlinkId = 0;
+        mWorkingDirectory = null;
+    }
+
+    private static String getLocalHostname() {
+        if (!sLocalHostnameResolved) {
+            try {
+                StructUtsname uts = Os.uname();
+                if (uts != null) {
+                    sCachedLocalHostname = uts.nodename;
+                }
+            } catch (Throwable ignored) {
+                // Fallback safely on non-Android JVM unit test runtimes.
+            }
+            sLocalHostnameResolved = true;
+        }
+        return sCachedLocalHostname;
+    }
+
+    /**
+     * Parse and validate an {@code OSC 7} working directory URI ({@code file://[host]/path} or
+     * {@code kitty-shell-cwd://[host]/path}), rejecting remote SSH hosts and UTF-8 percent-decoding
+     * the path without corrupting literal {@code '+'} characters.
+     */
+    static String parseOsc7WorkingDirectory(String textParameter, String localHostname) {
+        if (textParameter == null || textParameter.isEmpty()) return null;
+
+        String authorityAndPath;
+        if (textParameter.regionMatches(true, 0, "file://", 0, 7)) {
+            authorityAndPath = textParameter.substring(7);
+        } else if (textParameter.regionMatches(true, 0, "kitty-shell-cwd://", 0, 18)) {
+            authorityAndPath = textParameter.substring(18);
+        } else {
+            return null;
+        }
+
+        int slashIdx = authorityAndPath.indexOf('/');
+        if (slashIdx < 0) return null;
+
+        String host = authorityAndPath.substring(0, slashIdx);
+        if (!host.isEmpty() &&
+            !host.equalsIgnoreCase("localhost") &&
+            !host.equals("127.0.0.1") &&
+            !host.equals("[::1]") &&
+            (localHostname == null || localHostname.isEmpty() || !host.equalsIgnoreCase(localHostname))) {
+            return null;
+        }
+
+        String decoded = percentDecodeUtf8(authorityAndPath.substring(slashIdx));
+        if (decoded == null || decoded.isEmpty() || decoded.indexOf('\0') >= 0) {
+            return null;
+        }
+        return decoded;
+    }
+
+    static String percentDecodeUtf8(String input) {
+        if (input == null) return null;
+        if (input.indexOf('%') < 0) return input;
+
+        int len = input.length();
+        StringBuilder sb = new StringBuilder(len);
+        ByteArrayOutputStream utf8Buf = new ByteArrayOutputStream(32);
+
+        int i = 0;
+        while (i < len) {
+            char c = input.charAt(i);
+            if (c == '%' && i + 2 < len) {
+                int hi = Character.digit(input.charAt(i + 1), 16);
+                int lo = Character.digit(input.charAt(i + 2), 16);
+                if (hi >= 0 && lo >= 0) {
+                    utf8Buf.write((hi << 4) | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+            if (utf8Buf.size() > 0) {
+                sb.append(new String(utf8Buf.toByteArray(), StandardCharsets.UTF_8));
+                utf8Buf.reset();
+            }
+            sb.append(c);
+            i++;
+        }
+        if (utf8Buf.size() > 0) {
+            sb.append(new String(utf8Buf.toByteArray(), StandardCharsets.UTF_8));
+        }
+        return sb.toString();
     }
 
     public String getSelectedText(int x1, int y1, int x2, int y2) {

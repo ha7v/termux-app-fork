@@ -254,6 +254,10 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
         if (col < 0 || col >= term.mColumns || row < -term.getScreen().getActiveTranscriptRows() || row >= term.mRows) {
             return null;
         }
+        String osc8Url = term.getScreen().getHyperlinkAt(col, row);
+        if (osc8Url != null) {
+            return osc8Url;
+        }
         String wordAtTap = term.getScreen().getWordAtLocation(col, row);
         LinkedHashSet<CharSequence> urlSet = TermuxUrlUtils.extractUrls(wordAtTap);
         if (urlSet.isEmpty()) return null;
@@ -385,10 +389,25 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
             } else if (unicodeChar >= '1' && unicodeChar <= '9') {
                 int index = unicodeChar - '1';
                 mTermuxTerminalSessionActivityClient.switchToSession(index);
+            } else if (unicodeChar == '[') {
+                return mActivity.getTerminalView().jumpToPrompt(true);
+            } else if (unicodeChar == ']') {
+                return mActivity.getTerminalView().jumpToPrompt(false);
+            } else if (unicodeChar == 'o') {
+                copyLastCommandOutput();
             } else {
                 return false;
             }
             return true;
+        }
+
+        if (!mActivity.getProperties().areHardwareKeyboardShortcutsDisabled() &&
+            e.isCtrlPressed() && e.isShiftPressed() && !e.isAltPressed()) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP && mActivity.getTerminalView().jumpToPrompt(true)) {
+                return true;
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && mActivity.getTerminalView().jumpToPrompt(false)) {
+                return true;
+            }
         }
 
         // Paste on `Ctrl+Shift+V`, and on bare `Ctrl+V` when the preference allows it, instead of
@@ -848,6 +867,18 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
             selectedText, mActivity.getString(R.string.title_share_selected_text_with));
     }
 
+    public void copyLastCommandOutput() {
+        TerminalSession session = mActivity.getCurrentSession();
+        if (session == null || session.getEmulator() == null) return;
+        String output = session.getEmulator().getScreen().getLastCommandOutput();
+        if (DataUtils.isNullOrEmpty(output)) {
+            mActivity.showToast(mActivity.getString(R.string.msg_command_output_none_found), false);
+            return;
+        }
+        ShareUtils.copyTextToClipboard(mActivity, output,
+            mActivity.getString(R.string.msg_command_output_copied_to_clipboard));
+    }
+
     public void showUrlSelection() {
         TerminalSession session = mActivity.getCurrentSession();
         if (session == null) return;
@@ -855,6 +886,9 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
         String text = ShellUtils.getTerminalSessionTranscriptText(session, true, true);
 
         LinkedHashSet<CharSequence> urlSet = TermuxUrlUtils.extractUrls(text);
+        if (session.getEmulator() != null) {
+            urlSet.addAll(session.getEmulator().getScreen().collectHyperlinks());
+        }
         if (urlSet.isEmpty()) {
             new AlertDialog.Builder(mActivity).setMessage(R.string.title_select_url_none_found).show();
             return;
