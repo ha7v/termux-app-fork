@@ -239,13 +239,16 @@ public final class TerminalRow {
         if (columnToSet  < 0 || columnToSet >= mStyle.length)
             throw new IllegalArgumentException("TerminalRow.setChar(): columnToSet=" + columnToSet + ", codePoint=" + codePoint + ", style=" + style);
 
+        final int newCodePointDisplayWidth = WcWidth.width(codePoint);
+        if (newCodePointDisplayWidth <= 0 && TextStyle.isTerminalBitmap(mStyle[columnToSet])) {
+            return;
+        }
+
         mStyle[columnToSet] = style;
 
         if (!mHasTerminalBitmap && TextStyle.isTerminalBitmap(style)) {
             mHasTerminalBitmap = true;
         }
-
-        final int newCodePointDisplayWidth = WcWidth.width(codePoint);
 
         // Fast path when we don't have any chars with width != 1
         if (!mHasNonOneWidthOrSurrogateChars) {
@@ -268,10 +271,20 @@ public final class TerminalRow {
             if (wasExtraColForWideChar) columnToSet--;
         } else {
             // Check if we are overwriting the second half of a wide character starting at the previous column:
-            if (wasExtraColForWideChar) setChar(columnToSet - 1, ' ', style, (short) 0);
+            if (wasExtraColForWideChar) {
+                long leftStyle = TextStyle.isTerminalBitmap(style)
+                    ? (TextStyle.isTerminalBitmap(mStyle[columnToSet - 1]) ? TextStyle.NORMAL : mStyle[columnToSet - 1])
+                    : style;
+                setChar(columnToSet - 1, ' ', leftStyle, (short) 0);
+            }
             // Check if we are overwriting the first half of a wide character starting at the next column:
             boolean overwritingWideCharInNextColumn = newCodePointDisplayWidth == 2 && wideDisplayCharacterStartingAt(columnToSet + 1);
-            if (overwritingWideCharInNextColumn) setChar(columnToSet + 1, ' ', style, (short) 0);
+            if (overwritingWideCharInNextColumn) {
+                long rightStyle = TextStyle.isTerminalBitmap(style)
+                    ? (TextStyle.isTerminalBitmap(mStyle[columnToSet + 1]) ? TextStyle.NORMAL : mStyle[columnToSet + 1])
+                    : style;
+                setChar(columnToSet + 1, ' ', rightStyle, (short) 0);
+            }
         }
 
         char[] text = mText;
@@ -373,6 +386,7 @@ public final class TerminalRow {
         if (!newIsCombining) {
             setHyperlinkId(columnToSet, hyperlinkId);
             if (newCodePointDisplayWidth == 2) {
+                mStyle[columnToSet + 1] = style;
                 setHyperlinkId(columnToSet + 1, hyperlinkId);
             } else if (oldCodePointDisplayWidth == 2 && columnToSet + 1 < mColumns) {
                 setHyperlinkId(columnToSet + 1, (short) 0);

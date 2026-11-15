@@ -223,6 +223,10 @@ public final class TerminalEmulator {
     private static final int DECSET_BIT_RECTANGULAR_CHANGEATTRIBUTE = 1 << 12;
     /** DECSET 1003 - report mouse motion even when no button is pressed. */
     private static final int DECSET_BIT_MOUSE_TRACKING_ANY_EVENT = 1 << 13;
+    /** DECSET 80 (DECSDM) - disable sixel scrolling when set. */
+    private static final int DECSET_BIT_SIXEL_DISPLAY_MODE = 1 << 14;
+    /** DECSET 8452 - leave cursor to the right of the sixel graphic instead of advancing to the next line. */
+    private static final int DECSET_BIT_SIXEL_CURSOR_RIGHT = 1 << 15;
 
     private static final int MOUSE_TRACKING_BITS =
         DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE |
@@ -382,6 +386,9 @@ public final class TerminalEmulator {
     /** The {@link ITermImage} if an iTerm image command is being processed. */
     private ITermImage mITermImage;
 
+    /** Monotonic code-point counter used to amortize periodic bitmap GC checks inside streaming output. */
+    private int mBitmapGcTick;
+
 
 
     /**
@@ -507,6 +514,8 @@ public final class TerminalEmulator {
                 return DECSET_BIT_APPLICATION_KEYPAD;
             case 69:
                 return DECSET_BIT_LEFTRIGHT_MARGIN_MODE;
+            case 80:
+                return DECSET_BIT_SIXEL_DISPLAY_MODE;
             case 1000:
                 return DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE;
             case 1002:
@@ -519,6 +528,8 @@ public final class TerminalEmulator {
                 return DECSET_BIT_MOUSE_PROTOCOL_SGR;
             case 2004:
                 return DECSET_BIT_BRACKETED_PASTE_MODE;
+            case 8452:
+                return DECSET_BIT_SIXEL_CURSOR_RIGHT;
             default:
                 return -1;
             // throw new IllegalArgumentException("Unsupported decset: " + decsetBit);
@@ -770,6 +781,8 @@ public final class TerminalEmulator {
     public void append(byte[] buffer, int length) {
         for (int i = 0; i < length; i++)
             processByte(buffer[i]);
+        if (length > 0)
+            mScreen.maybeGCBitmaps(5000);
     }
 
     private void processByte(byte byteToProcess) {
@@ -838,9 +851,17 @@ public final class TerminalEmulator {
     }
 
     public void processCodePoint(int b) {
-        mScreen.doTerminalBitmapsGC(300000);
+        if ((++mBitmapGcTick & 0xfff) == 0) {
+            mScreen.maybeGCBitmaps(5000);
+        }
 
         if (mEscapeState == ESC_OSC && mIsFastPathOsc) {
+            if (b == 24 || b == 26) { // CAN or SUB cancels sequence immediately.
+                mEscapeState = ESC_NONE;
+                clearTerminalControlArgs();
+                clearOscTypeVariables();
+                return;
+            }
             mContinueSequence = false;
             receiveOsc(b);
             if (!mContinueSequence) mEscapeState = ESC_NONE;
@@ -848,6 +869,12 @@ public final class TerminalEmulator {
         }
 
         if (mEscapeState == ESC_DCS && mIsFastPathDcs) {
+            if (b == 24 || b == 26) { // CAN or SUB cancels sequence immediately.
+                mEscapeState = ESC_NONE;
+                clearTerminalControlArgs();
+                clearDcsTypeVariables();
+                return;
+            }
             if (b == 27) { // ESC
                 ESC_DCS__ESC = true;
                 return;
@@ -930,6 +957,9 @@ public final class TerminalEmulator {
                 // Cancel any escape sequence in progress. Nothing is printed, as in xterm.
                 if (mEscapeState != ESC_NONE) {
                     mEscapeState = ESC_NONE;
+                    clearTerminalControlArgs();
+                    clearOscTypeVariables();
+                    clearDcsTypeVariables();
                 }
                 break;
             case 27: // ESC
@@ -1041,10 +1071,15 @@ public final class TerminalEmulator {
                                     int bottom = Math.min(getArg(argIndex++, mRows, true) + effectiveTopMargin, effectiveBottomMargin);
                                     int right = Math.min(getArg(argIndex, mColumns, true) + effectiveLeftMargin, effectiveRightMargin);
                                     long style = getStyle();
-                                    for (int row = top - 1; row < bottom; row++)
-                                        for (int col = left - 1; col < right; col++)
-                                            if (!selective || (TextStyle.decodeEffect(mScreen.getStyleAt(row, col)) & TextStyle.CHARACTER_ATTRIBUTE_PROTECTED) == 0)
-                                                mScreen.setChar(col, row, fillChar, keepVisualAttributes ? mScreen.getStyleAt(row, col) : style);
+                                    for (int row = top - 1; row < bottom; row++) {
+                                        for (int col = left - 1; col < right; col++) {
+                                            long cellStyle = mScreen.getStyleAt(row, col);
+                                            if (!selective || (TextStyle.decodeEffect(cellStyle) & TextStyle.CHARACTER_ATTRIBUTE_PROTECTED) == 0) {
+                                                mScreen.setChar(col, row, fillChar,
+                                                    (keepVisualAttributes && !TextStyle.isTerminalBitmap(cellStyle)) ? cellStyle : style);
+                                            }
+                                        }
+                                    }
                                 }
                                 break;
                             case 'r': // "${CSI}${TOP}${LEFT}${BOTTOM}${RIGHT}${ATTRIBUTES}$r"
@@ -1370,9 +1405,23 @@ public final class TerminalEmulator {
                     }
 
                     if (ESC_DCS__ESC && b == '\\') {
-                        int n = mScreen.sixelEnd(mCursorCol, mCursorRow, mCellWidthPixels, mCellHeightPixels);
-                        for(; n > 0; n--) {
-                            doLinefeed();
+                        boolean sixelScrollingDisabled = isDecsetInternalBitSet(DECSET_BIT_SIXEL_DISPLAY_MODE);
+                        boolean sixelCursorRight = isDecsetInternalBitSet(DECSET_BIT_SIXEL_CURSOR_RIGHT);
+                        int startCol = sixelScrollingDisabled ? 0 : mCursorCol;
+                        int startRow = sixelScrollingDisabled ? 0 : mCursorRow;
+                        boolean canScroll = !sixelScrollingDisabled && startCol >= mLeftMargin && startCol < mRightMargin;
+                        int rightLimit = (!sixelScrollingDisabled && mCursorCol < mRightMargin) ? mRightMargin : mColumns;
+                        TerminalBitmap bitmap = mScreen.sixelEnd(
+                            startCol, startRow, mCellWidthPixels, mCellHeightPixels,
+                            canScroll, this::scrollDownOneLine, mBottomMargin, rightLimit);
+                        if (bitmap != null && !sixelScrollingDisabled) {
+                            if (sixelCursorRight) {
+                                int rightCol = Math.min(rightLimit - 1, startCol + bitmap.getCellColumns());
+                                setCursorRowCol(bitmap.getLastRow(), rightCol);
+                            } else {
+                                setCursorRowCol(bitmap.getLastRow(), startCol);
+                                doLinefeed();
+                            }
                         }
 
                         // Clear DCS args buffer and variables and finish sequence.
@@ -1715,19 +1764,18 @@ public final class TerminalEmulator {
                     // memory reallocations and copying.
                     int sixelWidth = args[2]; // `Ph`
                     int sixelHeight = args[3]; // `Pv`
-                    if (sixelWidth > 0 && sixelHeight > 0) {
+                    if (sixelWidth > 0 && sixelHeight > 0 && mScreen.sixelResize(sixelWidth, sixelHeight)) {
                         // 2% extra for sixel commands/parameters in addition to image data.
-                        int sixelArgsExpectedLength = (int) (sixelWidth * sixelHeight * 1.02);
+                        long sixelArgsExpectedLength = (long) ((double) sixelWidth * sixelHeight * 1.02);
                         // If sixel commands are too long, they are divided into parts, and if a
                         // new command starts near `mTerminalControlArgsMaxLength / 2`, it could
                         // contain image data for 1 pixel line of image width, so add that.
-                        int sixelArgsPartsExpectedLength = (int) ((((double) mTerminalControlArgsMaxLength / 2) + sixelWidth) * 1.02);
-                        int sixelArgsExpectedCapacity = Math.min(sixelArgsPartsExpectedLength, sixelArgsExpectedLength);
+                        long sixelArgsPartsExpectedLength = (long) ((((double) mTerminalControlArgsMaxLength / 2) + sixelWidth) * 1.02);
+                        long sixelArgsExpectedCapacity = Math.min(mTerminalControlArgsMaxLength,
+                            Math.min(sixelArgsPartsExpectedLength, sixelArgsExpectedLength));
                         if (sixelArgsExpectedCapacity > SIXEL_ARGS__INITIAL_CAPACITY) {
-                            mSixelArgsCapacity = sixelArgsExpectedCapacity;
+                            mSixelArgsCapacity = (int) sixelArgsExpectedCapacity;
                         }
-
-                        mScreen.sixelResize(sixelWidth, sixelHeight);
                     }
                 } else {
                     if (isValidDcs)
@@ -1934,6 +1982,8 @@ public final class TerminalEmulator {
                     mRightMargin = mColumns;
                 }
                 break;
+            case 80: // Sixel Display Mode (DECSDM) - handled via DECSET_BIT_SIXEL_DISPLAY_MODE.
+                break;
             case 1000:
             case 1001:
             case 1002:
@@ -1972,9 +2022,11 @@ public final class TerminalEmulator {
                     }
                     // Check if buffer size needs to be updated:
                     if (resized) resizeScreen();
-                    // Clear new screen if alt buffer:
+                    // Clear new screen if alt buffer, and release any bitmaps retained in alt buffer on entry/exit:
                     if (newScreen == mAltBuffer)
                         newScreen.blockSet(0, 0, mColumns, mRows, ' ', getStyle());
+                    mAltBuffer.clearTerminalBitmaps();
+                    mAltBuffer.sixelClear();
                     // Reset alternate-screen Kitty keyboard stack on entry/exit so crashed TUIs cannot leak state:
                     mKeyboardProtocol.clearAltScreenState();
                     mCurrentHyperlinkId = 0;
@@ -1983,6 +2035,9 @@ public final class TerminalEmulator {
             }
             case 2004:
                 // Bracketed paste mode - setting bit is enough.
+                break;
+            case 8452:
+                // Sixel cursor-right mode - handled via DECSET_BIT_SIXEL_CURSOR_RIGHT.
                 break;
             default:
                 unknownParameter(externalBit);
@@ -2186,6 +2241,10 @@ public final class TerminalEmulator {
             case 'c': // RIS - Reset to Initial State (http://vt100.net/docs/vt510-rm/RIS).
                 reset();
                 mMainBuffer.clearTranscript();
+                mMainBuffer.clearTerminalBitmaps();
+                mMainBuffer.sixelClear();
+                mAltBuffer.clearTerminalBitmaps();
+                mAltBuffer.sixelClear();
                 blockClear(0, 0, mColumns, mRows);
                 setCursorPosition(0, 0);
                 break;
@@ -2885,12 +2944,12 @@ public final class TerminalEmulator {
                     break;
             }
 
-            if (terminalControlArgsCapacity != null) {
-                ensureTerminalControlArgsCapacity(terminalControlArgsCapacity);
-            }
-
             if (terminalControlArgsMaxLength != null) {
                 setTerminalControlArgsMaxLength(terminalControlArgsMaxLength);
+            }
+
+            if (terminalControlArgsCapacity != null) {
+                ensureTerminalControlArgsCapacity(terminalControlArgsCapacity);
             }
         }
     }
@@ -3167,21 +3226,27 @@ public final class TerminalEmulator {
                     if (iTermImage != null && iTermImage.isImageDecoded()) {
                         // Display image as inline in Terminal.
                         if (iTermImage.isInline()) {
-                            int[] cursorDelta = mScreen.addTerminalBitmapForImage(iTermImage.getDecodedImage(),
-                                mCursorCol, mCursorRow, mCellWidthPixels, mCellHeightPixels,
+                            int startCol = mCursorCol;
+                            boolean withinHorizMargins = startCol >= mLeftMargin && startCol < mRightMargin;
+                            int rightLimit = startCol < mRightMargin ? mRightMargin : mColumns;
+                            TerminalBitmap bitmap = mScreen.addTerminalBitmapForImage(
+                                iTermImage.getDecodedImage(),
+                                startCol, mCursorRow, mCellWidthPixels, mCellHeightPixels,
                                 iTermImage.getWidth(), iTermImage.getHeight(),
-                                iTermImage.shouldPreserveAspectRatio());
+                                iTermImage.shouldPreserveAspectRatio(),
+                                withinHorizMargins ? this::scrollDownOneLine : null,
+                                withinHorizMargins ? mBottomMargin : mRows,
+                                rightLimit);
 
-                            int col = cursorDelta[1] + mCursorCol;
-                            if (col < mColumns - 1) {
-                                cursorDelta[0] -= 1;
-                            } else {
-                                col = 0;
+                            if (bitmap != null) {
+                                int nextCol = startCol + bitmap.getCellColumns();
+                                if (nextCol < rightLimit) {
+                                    setCursorRowCol(bitmap.getLastRow(), nextCol);
+                                } else {
+                                    setCursorRowCol(bitmap.getLastRow(), startCol >= mLeftMargin ? mLeftMargin : 0);
+                                    if (withinHorizMargins) doLinefeed();
+                                }
                             }
-                            for (; cursorDelta[0] > 0; cursorDelta[0]--) {
-                                doLinefeed();
-                            }
-                            mCursorCol = col;
                         }
                         // Saving files in downloads folder is not supported currently.
                         else {}
@@ -3383,6 +3448,8 @@ public final class TerminalEmulator {
         }
 
         clearTerminalControlArgs();
+        clearOscTypeVariables();
+        clearDcsTypeVariables();
         finishSequence();
         return false;
     }
@@ -3426,7 +3493,13 @@ public final class TerminalEmulator {
      * @param capacity The new capacity.
      */
     private void ensureTerminalControlArgsCapacity(int capacity) {
-        mTerminalControlArgs.ensureCapacity(capacity);
+        if (capacity <= 0) return;
+        try {
+            mTerminalControlArgs.ensureCapacity(Math.min(capacity, mTerminalControlArgsMaxLength));
+        } catch (Throwable t) {
+            if (t instanceof OutOfMemoryError) System.gc();
+            Logger.logError(mClient, LOG_TAG, "Terminal control args ensureCapacity(" + capacity + ") failed: " + t.getMessage());
+        }
     }
 
     /**
@@ -3750,6 +3823,7 @@ public final class TerminalEmulator {
 
         clearTerminalControlArgs();
         clearOscTypeVariables();
+        clearDcsTypeVariables();
         mITermImage = null;
         mKeyboardProtocol.reset();
         mCurrentHyperlinkId = 0;

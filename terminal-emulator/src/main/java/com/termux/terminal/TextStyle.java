@@ -91,8 +91,13 @@ public final class TextStyle {
 
 
 
+    /** Exclusive upper bound for the 16-bit unsigned bitmap ID in {@link #encodeTerminalBitmap(int, int, int)}. */
+    public final static int MAX_TERMINAL_BITMAP_NUM = 0x10000;
+    /** Exclusive upper bound for the 12-bit unsigned cell slice X/Y coordinates in {@link #encodeTerminalBitmap(int, int, int)}. */
+    public final static int MAX_TERMINAL_BITMAP_CELLS = 0x1000;
+
     public static long encodeTerminalBitmap(int num, int x, int y) {
-        return ((long) x << 48) | ((long) y << 32) | ((long) num << 16) | TERMINAL_BITMAP;
+        return ((long) (x & 0xfff) << 48) | ((long) (y & 0xfff) << 32) | ((long) (num & 0xffff) << 16) | TERMINAL_BITMAP;
     }
 
     public static boolean isTerminalBitmap(long style) {
@@ -102,15 +107,15 @@ public final class TextStyle {
     /* The bitmap num, x or y could have value `0`, so only return value (especially `0`) if bitmap bit is set. */
 
     public static int getTerminalBitmapNum(long style) {
-        return (style & TERMINAL_BITMAP) != 0 ? (int) (style & 0xffff0000L) >> 16 : -1;
+        return (style & TERMINAL_BITMAP) != 0 ? (int) ((style >>> 16) & 0xffffL) : -1;
     }
 
     public static int getTerminalBitmapX(long style) {
-        return (style & TERMINAL_BITMAP) != 0 ? (int) ((style >> 48) & 0xfff) : -1;
+        return (style & TERMINAL_BITMAP) != 0 ? (int) ((style >>> 48) & 0xfffL) : -1;
     }
 
     public static int getTerminalBitmapY(long style) {
-        return (style & TERMINAL_BITMAP) != 0 ? (int) ((style >> 32) & 0xfff) : -1;
+        return (style & TERMINAL_BITMAP) != 0 ? (int) ((style >>> 32) & 0xfffL) : -1;
     }
 
 }

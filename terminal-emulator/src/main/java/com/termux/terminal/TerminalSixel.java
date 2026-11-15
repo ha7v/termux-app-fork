@@ -2,20 +2,25 @@ package com.termux.terminal;
 
 import android.graphics.Bitmap;
 
+import java.util.Arrays;
+
 /**
  * A terminal sixel received via `DCS q s..s ST` or `DCS P1; P2; P3; q s..s ST`.
  *
- * **See Also:**
- * - `TerminalEmulator.ESC_DCS__SIXEL`
- * - https://vt100.net/docs/vt3xx-gp/chapter14.html
- * - https://en.wikipedia.org/wiki/Sixel
- * - https://www.digiater.nl/openvms/decus/vax90b1/krypton-nasa/all-about-sixels.text
+ * <p>Decodes Sixel bands into a pure-Java {@code int[]} pixel buffer to avoid per-pixel JNI
+ * crossings and intermediate {@link Bitmap} reallocations, then materializes a single exact-sized
+ * {@link Bitmap} once the sequence terminates.
+ *
+ * <p><b>See Also:</b>
+ * <ul>
+ *   <li>{@code TerminalEmulator.ESC_DCS__SIXEL}</li>
+ *   <li><a href="https://vt100.net/docs/vt3xx-gp/chapter14.html">VT330/VT340 Sixel Graphics</a></li>
+ *   <li><a href="https://en.wikipedia.org/wiki/Sixel">Sixel (Wikipedia)</a></li>
+ * </ul>
  */
-public class TerminalSixel {
+public final class TerminalSixel {
 
     public static final String LOG_TAG = "TerminalSixel";
-
-
 
     public static final int[] SIXEL__INITIAL_COLOR_MAP = {
         0xFF000000, 0xFF3333CC, 0xFFCC2323, 0xFF33CC33, 0xFFCC33CC, 0xFF33CCCC, 0xFFCCCC33, 0xFF777777,
@@ -28,42 +33,38 @@ public class TerminalSixel {
     public static final int SIXEL__LINE_LEN = 6;
 
     /**
-     * The amount of extra dimension added when resizing a sixel when receiving more image data.
+     * The amount of extra dimension added when resizing a sixel buffer when receiving more image data.
      */
     public static final int SIXEL__BITMAP_RESIZE_EXTRA_DIMENSION = 100;
 
     /**
      * The max value for the sixel Graphics Repeat Introducer.
      *
-     * The value `8192` can support 8K images, see also {@link TerminalBitmap#MAX_BITMAP_SIZE}.
-     *
-     * Each repeat creates a new sixel line of `1x6` pixels, where `6` is the {@link #SIXEL__LINE_LEN}.
-     *
-     *  - https://vt100.net/docs/vt3xx-gp/chapter14.html#S14.3.1
+     * <p>The value {@code 8192} can support 8K images, see also {@link TerminalBitmap#MAX_BITMAP_SIZE}.
      */
     public static final int SIXEL__MAX_REPEAT = 8192;
 
+    private final TerminalSessionClient mClient;
 
+    private int[] mPixels;
+    private int mBufferWidth;
+    private int mBufferHeight;
 
-    protected final TerminalSessionClient mClient;
+    private int mWidth;
+    private int mHeight;
 
-    protected Bitmap mBitmap;
+    private int mCurX;
+    private int mCurY;
 
-    protected int mWidth;
-    protected int mHeight;
+    private final int[] mColorMap;
+    private int mColor;
 
-    protected int mCurX;
-    protected int mCurY;
-
-    protected final int[] mColorMap;
-    protected int mColor;
-
-
-
-    protected TerminalSixel(TerminalSessionClient client, Bitmap bitmap) {
+    private TerminalSixel(TerminalSessionClient client, int[] pixels, int bufferWidth, int bufferHeight) {
         mClient = client;
 
-        mBitmap = bitmap;
+        mPixels = pixels;
+        mBufferWidth = bufferWidth;
+        mBufferHeight = bufferHeight;
 
         mWidth = 0;
         mHeight = 0;
@@ -76,34 +77,57 @@ public class TerminalSixel {
         mColor = mColorMap[0];
     }
 
-
-
     public static TerminalSixel build(TerminalSessionClient client, int bitmapWidth, int bitmapHeight) {
+        if (!TerminalBitmap.isValidBitmapSize(bitmapWidth, bitmapHeight)) {
+            Logger.logError(client, LOG_TAG, "Create sixel buffer for width " + bitmapWidth +
+                " with height " + bitmapHeight + " failed: Invalid dimensions");
+            return null;
+        }
         try {
-
-            Bitmap bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888);
-            bitmap.eraseColor(0);
-
-            return new TerminalSixel(client, bitmap);
+            int[] pixels = new int[bitmapWidth * bitmapHeight];
+            return new TerminalSixel(client, pixels, bitmapWidth, bitmapHeight);
         } catch (Throwable t) {
             if (t instanceof OutOfMemoryError) System.gc();
-            Logger.logError(client, LOG_TAG, "Create sixel bitmap for" +
-                " width " + bitmapWidth + " with height " + bitmapHeight + " failed: " + t.getMessage());
+            Logger.logError(client, LOG_TAG, "Create sixel buffer for width " + bitmapWidth +
+                " with height " + bitmapHeight + " failed: " + t.getMessage());
             return null;
         }
     }
 
-
-
-    public TerminalSessionClient getClient() {
-        return mClient;
+    /** Materialize a {@link Bitmap} cropped to {@code (width, height)} from the decoded pixel buffer. */
+    public Bitmap createBitmap(int width, int height) {
+        if (mPixels == null || !TerminalBitmap.isValidBitmapSize(width, height)) {
+            return null;
+        }
+        try {
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            if (bitmap == null) {
+                return null;
+            }
+            int copyWidth = Math.min(width, mBufferWidth);
+            int copyHeight = Math.min(height, mBufferHeight);
+            if (copyWidth < width || copyHeight < height) {
+                bitmap.eraseColor(0);
+            }
+            if (copyWidth > 0 && copyHeight > 0) {
+                bitmap.setPixels(mPixels, 0, mBufferWidth, 0, 0, copyWidth, copyHeight);
+            }
+            return bitmap;
+        } catch (Throwable t) {
+            if (t instanceof OutOfMemoryError) System.gc();
+            Logger.logError(mClient, LOG_TAG, "Materialize sixel bitmap for width " + width +
+                " with height " + height + " failed: " + t.getMessage());
+            return null;
+        }
     }
 
-
-    public Bitmap getBitmap() {
-        return mBitmap;
+    public int getPixel(int x, int y) {
+        if (mPixels == null || x < 0 || x >= mWidth || y < 0 || y >= mHeight
+            || x >= mBufferWidth || y >= mBufferHeight) {
+            return 0;
+        }
+        return mPixels[y * mBufferWidth + x];
     }
-
 
     public int getWidth() {
         return mWidth;
@@ -113,143 +137,155 @@ public class TerminalSixel {
         return mHeight;
     }
 
-
-    public int getCurX() {
-        return mCurX;
-    }
-
     public int getCurY() {
         return mCurY;
     }
 
-
-    public int[] getColorMap() {
-        return mColorMap;
-    }
-
-    public int getColor() {
-        return mColor;
-    }
-
-
-
     public boolean readData(int codePoint, int repeat) {
-        if (mBitmap == null) {
+        if (mPixels == null) {
             return false;
         }
 
-        if (repeat > TerminalSixel.SIXEL__MAX_REPEAT) {
-            Logger.logError(mClient, LOG_TAG, "The sixel repeat value " + repeat + " is greater than max repeat value " + TerminalSixel.SIXEL__MAX_REPEAT);
+        if (repeat < 0 || repeat > SIXEL__MAX_REPEAT) {
+            Logger.logError(mClient, LOG_TAG, "The sixel repeat value " + repeat + " is invalid (max " + SIXEL__MAX_REPEAT + ")");
             return false;
         }
 
-        // Graphics Carriage Return `$`.
-        // > The $ (2/4) character indicates the end of the sixel line. The active position returns
-        // > to the left page border of the same sixel line. You can use this character to overprint lines.
-        // - https://vt100.net/docs/vt3xx-gp/chapter14.html#S14.3.4
+        // Graphics Carriage Return `$` (https://vt100.net/docs/vt3xx-gp/chapter14.html#S14.3.4).
         if (codePoint == '$') {
             mCurX = 0;
             return true;
         }
 
-        // Graphics New Line `-`.
-        // > The - (2/13) character indicates the end of a sixel line. The active position moves to
-        // > the left margin of the next sixel line.
-        // - https://vt100.net/docs/vt3xx-gp/chapter14.html#S14.3.5
+        // Graphics New Line `-` (https://vt100.net/docs/vt3xx-gp/chapter14.html#S14.3.5).
         if (codePoint == '-') {
+            if (mCurY > TerminalBitmap.MAX_BITMAP_DIMENSION - SIXEL__LINE_LEN) {
+                Logger.logError(mClient, LOG_TAG, "The sixel cursor y position overflowed max dimension: " + mCurY);
+                return false;
+            }
             mCurX = 0;
             mCurY += SIXEL__LINE_LEN;
             return true;
         }
 
-        if (mBitmap.getWidth() < mCurX + repeat) {
-            int newBitmapWidth = mCurX + repeat + SIXEL__BITMAP_RESIZE_EXTRA_DIMENSION;
-
-            if (newBitmapWidth < 0) {
-                Logger.logError(mClient, LOG_TAG, "The new sixel bitmap width overflowed: " +
-                    mCurX + " (cursor x) + " + repeat + " (repeat) + " + SIXEL__BITMAP_RESIZE_EXTRA_DIMENSION);
-                return false;
-            }
-
-            mBitmap = TerminalBitmap.resizeBitmap(LOG_TAG, "sixel", mClient, mBitmap, newBitmapWidth, mBitmap.getHeight());
-            if (mBitmap == null) {
-                return false;
-            }
+        // Sixel data characters are in the range of `?` (0x3F) to `~` (0x7E).
+        if (repeat == 0 || codePoint < '?' || codePoint > '~') {
+            return true;
         }
 
-        if (mBitmap.getHeight() < mCurY + SIXEL__LINE_LEN) {
-            // Very unlikely to resize both at the same time.
-            int newBitmapHeight = mCurY + SIXEL__BITMAP_RESIZE_EXTRA_DIMENSION;
-
-            if (newBitmapHeight < 0) {
-                Logger.logError(mClient, LOG_TAG, "The new sixel bitmap height overflowed: " +
-                    mCurY + " (cursor y) + " + SIXEL__BITMAP_RESIZE_EXTRA_DIMENSION);
-                return false;
-            }
-
-            mBitmap = TerminalBitmap.resizeBitmap(LOG_TAG, "sixel", mClient, mBitmap, mBitmap.getWidth(), newBitmapHeight);
-            if (mBitmap == null) {
-                return false;
-            }
-        }
-
-        if (mCurX + repeat > mBitmap.getWidth()) {
-            repeat = mBitmap.getWidth() - mCurX;
-        }
-
-        if (mCurY + SIXEL__LINE_LEN > mBitmap.getHeight()) {
-            Logger.logError(mClient, LOG_TAG, "The sixel curson y position " +
-                mCurY + SIXEL__LINE_LEN + " is greater than bitmap height " + mBitmap.getHeight());
+        if ((long) mCurX + repeat > TerminalBitmap.MAX_BITMAP_DIMENSION) {
+            Logger.logError(mClient, LOG_TAG, "The sixel cursor x position overflowed max dimension: " + mCurX + " + " + repeat);
             return false;
         }
 
-        // Sixel data characters are in the range of `?` (0x3F) to `~` (0x7E).
-        // > Each sixel data character represents six vertical pixels of data. Each sixel data character
-        // > represents a binary value equal to the character code value minus hex 3F.
-        // - https://vt100.net/docs/vt3xx-gp/chapter14.html#S14.2.1
-        if (repeat > 0 && codePoint >= '?' && codePoint <= '~') {
-            int b = codePoint - '?';
-            if (mCurY + SIXEL__LINE_LEN > mHeight) {
-                mHeight = mCurY + SIXEL__LINE_LEN;
+        int endX = mCurX + repeat;
+        int b = codePoint - '?';
+        if (b == 0) {
+            // '?' has no lit pixels; advance horizontal geometry without touching pixel memory.
+            int candidateWidth = Math.max(mWidth, endX);
+            if (mHeight > 0 && !TerminalBitmap.isValidBitmapSize(candidateWidth, mHeight)) {
+                Logger.logError(mClient, LOG_TAG, "The sixel dimensions " + candidateWidth + "x" + mHeight +
+                    " exceed max bitmap size " + TerminalBitmap.MAX_BITMAP_SIZE);
+                return false;
             }
+            mCurX = endX;
+            mWidth = candidateWidth;
+            return true;
+        }
 
-            while (repeat-- > 0) {
-                for (int i = 0; i < SIXEL__LINE_LEN; i++) {
-                    if ((b & (1 << i)) != 0) {
-                        mBitmap.setPixel(mCurX, mCurY + i, mColor);
-                    }
-                }
+        // Track the exact lowest lit pixel row instead of rounding up to a 6px band,
+        // so images ending mid-band do not spill into an extra terminal row.
+        int highestBit = 31 - Integer.numberOfLeadingZeros(b & 0x3f);
+        int lowestPixelY = mCurY + highestBit + 1;
+        int requiredWidth = Math.max(mWidth, endX);
+        int requiredHeight = Math.max(mHeight, lowestPixelY);
 
-                mCurX += 1;
-                if (mCurX > mWidth) {
-                    mWidth = mCurX;
+        if (!ensureCapacity(requiredWidth, requiredHeight, true)) {
+            return false;
+        }
+
+        int color = mColor;
+        int stride = mBufferWidth;
+        int[] pixels = mPixels;
+        for (int i = 0; i <= highestBit; i++) {
+            if ((b & (1 << i)) != 0) {
+                int rowStart = (mCurY + i) * stride + mCurX;
+                if (repeat == 1) {
+                    pixels[rowStart] = color;
+                } else {
+                    Arrays.fill(pixels, rowStart, rowStart + repeat, color);
                 }
             }
         }
 
+        mCurX = endX;
+        mWidth = requiredWidth;
+        mHeight = requiredHeight;
         return true;
     }
 
     public boolean resize(int sixelWidth, int sixelHeight) {
-        if (mBitmap == null) {
+        if (mPixels == null || sixelWidth < 1 || sixelHeight < 1) {
+            return false;
+        }
+        return ensureCapacity(sixelWidth, sixelHeight, false);
+    }
+
+    private boolean ensureCapacity(int minWidth, int minHeight, boolean growAmortized) {
+        if (minWidth <= mBufferWidth && minHeight <= mBufferHeight) {
+            return true;
+        }
+        if (!TerminalBitmap.isValidBitmapSize(minWidth, minHeight)) {
+            Logger.logError(mClient, LOG_TAG, "The sixel buffer with width " + minWidth +
+                " and height " + minHeight + " exceeds max bitmap size " + TerminalBitmap.MAX_BITMAP_SIZE);
             return false;
         }
 
-        if (sixelWidth < 1 || sixelHeight < 1)
+        int newWidth = Math.max(mBufferWidth, minWidth);
+        int newHeight = Math.max(mBufferHeight, minHeight);
+        if (growAmortized) {
+            if (mBufferWidth < minWidth) {
+                long candidateW = Math.max((long) minWidth + SIXEL__BITMAP_RESIZE_EXTRA_DIMENSION, (long) mBufferWidth * 2L);
+                newWidth = (int) Math.min(TerminalBitmap.MAX_BITMAP_DIMENSION, candidateW);
+            }
+            if (mBufferHeight < minHeight) {
+                long candidateH = Math.max((long) minHeight + SIXEL__BITMAP_RESIZE_EXTRA_DIMENSION, (long) mBufferHeight * 2L);
+                newHeight = (int) Math.min(TerminalBitmap.MAX_BITMAP_DIMENSION, candidateH);
+            }
+            if (!TerminalBitmap.isValidBitmapSize(newWidth, newHeight)) {
+                newWidth = Math.max(mBufferWidth, minWidth);
+                newHeight = Math.max(mBufferHeight, minHeight);
+                if (!TerminalBitmap.isValidBitmapSize(newWidth, newHeight)) {
+                    Logger.logError(mClient, LOG_TAG, "The sixel buffer with width " + newWidth +
+                        " and height " + newHeight + " exceeds max bitmap size " + TerminalBitmap.MAX_BITMAP_SIZE);
+                    return false;
+                }
+            }
+        } else if (!TerminalBitmap.isValidBitmapSize(newWidth, newHeight)) {
+            Logger.logError(mClient, LOG_TAG, "The sixel buffer with width " + newWidth +
+                " and height " + newHeight + " exceeds max bitmap size " + TerminalBitmap.MAX_BITMAP_SIZE);
             return false;
-
-        int bitmapWidth = mBitmap.getWidth();
-        int newBitmapWidth = Math.max(sixelWidth, bitmapWidth);
-
-        int bitmapHeight = mBitmap.getHeight();
-        int newBitmapHeight = Math.max(sixelHeight, bitmapHeight);
-
-        if (bitmapWidth < newBitmapWidth || bitmapHeight < newBitmapHeight) {
-            mBitmap = TerminalBitmap.resizeBitmap(LOG_TAG, "sixel", mClient, mBitmap, newBitmapWidth, newBitmapHeight);
-            return mBitmap != null;
         }
 
-        return true;
+        try {
+            int[] newPixels = new int[newWidth * newHeight];
+            int copyRows = Math.min(mHeight, mBufferHeight);
+            int copyCols = Math.min(mWidth, mBufferWidth);
+            if (copyCols > 0) {
+                for (int y = 0; y < copyRows; y++) {
+                    System.arraycopy(mPixels, y * mBufferWidth, newPixels, y * newWidth, copyCols);
+                }
+            }
+            mPixels = newPixels;
+            mBufferWidth = newWidth;
+            mBufferHeight = newHeight;
+            return true;
+        } catch (Throwable t) {
+            if (t instanceof OutOfMemoryError) System.gc();
+            Logger.logError(mClient, LOG_TAG, "Resize sixel buffer to width " + newWidth +
+                " and height " + newHeight + " failed: " + t.getMessage());
+            return false;
+        }
     }
 
     public void setColor(int color) {
@@ -260,9 +296,9 @@ public class TerminalSixel {
 
     public void setRGBColor(int color, int r, int g, int b) {
         if (color >= 0 && color < mColorMap.length) {
-            int red = Math.min(255, r * 255/100);
-            int green = Math.min(255, g * 255/100);
-            int blue = Math.min(255, b * 255/100);
+            int red = Math.min(255, r * 255 / 100);
+            int green = Math.min(255, g * 255 / 100);
+            int blue = Math.min(255, b * 255 / 100);
             mColor = 0xff000000 + (red << 16) + (green << 8) + blue;
             mColorMap[color] = mColor;
         }
