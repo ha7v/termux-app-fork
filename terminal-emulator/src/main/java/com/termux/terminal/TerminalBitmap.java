@@ -57,7 +57,9 @@ public final class TerminalBitmap {
     private static boolean detectBitmapRuntime() {
         try {
             Bitmap probe = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
-            return probe != null && probe.getWidth() == 1 && probe.getHeight() == 1;
+            boolean available = probe != null && probe.getWidth() == 1 && probe.getHeight() == 1;
+            recycleUnpublishedBitmap(probe);
+            return available;
         } catch (Throwable ignored) {
             return false;
         }
@@ -106,6 +108,7 @@ public final class TerminalBitmap {
     public static TerminalBitmap build(TerminalBuffer terminalBuffer, int bitmapNum, TerminalSixel terminalSixel,
                                        int x, int y, int cellWidth, int cellHeight, boolean scrollEnabled,
                                        ScrollHandler scrollHandler, int bottomMargin, int rightMargin) {
+        Bitmap bitmap = null;
         try {
             if (terminalSixel == null || cellWidth <= 0 || cellHeight <= 0
                 || x < 0 || x >= terminalBuffer.mColumns || y < 0 || y >= terminalBuffer.mScreenRows) {
@@ -137,7 +140,7 @@ public final class TerminalBitmap {
                 return null;
             }
 
-            Bitmap bitmap = BITMAP_RUNTIME_AVAILABLE
+            bitmap = BITMAP_RUNTIME_AVAILABLE
                 ? terminalSixel.createBitmap(contentWidth, contentHeight) : null;
             if (BITMAP_RUNTIME_AVAILABLE && bitmap == null) {
                 Logger.logError(terminalBuffer.getClient(), LOG_TAG,
@@ -145,10 +148,15 @@ public final class TerminalBitmap {
                 return null;
             }
 
-            return layoutBitmapOnScreen(terminalBuffer, bitmapNum, bitmap,
+            TerminalBitmap result = layoutBitmapOnScreen(terminalBuffer, bitmapNum, bitmap,
                 x, y, cellWidth, cellHeight, contentWidth, contentHeight,
                 scrollEnabled, scrollHandler, bottomMargin, effectiveRightMargin);
+            if (result == null) {
+                recycleUnpublishedBitmap(bitmap);
+            }
+            return result;
         } catch (Throwable t) {
+            recycleUnpublishedBitmap(bitmap);
             if (t instanceof OutOfMemoryError) System.gc();
             Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                 "Create terminal bitmap " + bitmapNum + " from terminal sixel failed: " + t.getMessage());
@@ -161,6 +169,7 @@ public final class TerminalBitmap {
                                        int x, int y, int cellWidth, int cellHeight,
                                        int width, int height, boolean shouldPreserveAspectRatio,
                                        ScrollHandler scrollHandler, int bottomMargin, int rightMargin) {
+        Bitmap newBitmap = null;
         try {
             if (cellWidth <= 0 || cellHeight <= 0
                 || x < 0 || x >= terminalBuffer.mColumns || y < 0 || y >= terminalBuffer.mScreenRows) {
@@ -237,7 +246,6 @@ public final class TerminalBitmap {
                 scaleFactor *= 2;
             }
 
-            Bitmap newBitmap;
             try {
                 if (scaleFactor > 1) {
                     BitmapFactory.Options scaleOptions = new BitmapFactory.Options();
@@ -333,6 +341,7 @@ public final class TerminalBitmap {
             }
             return result;
         } catch (Throwable t) {
+            recycleUnpublishedBitmap(newBitmap);
             if (t instanceof OutOfMemoryError) System.gc();
             Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                 "Create terminal bitmap " + bitmapNum + " from image byte array failed: " + t.getMessage());
@@ -340,7 +349,7 @@ public final class TerminalBitmap {
         }
     }
 
-    private static void recycleUnpublishedBitmap(Bitmap bitmap) {
+    static void recycleUnpublishedBitmap(Bitmap bitmap) {
         if (bitmap != null && !bitmap.isRecycled()) {
             bitmap.recycle();
         }

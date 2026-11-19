@@ -995,12 +995,13 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
     public void doPaste() {
         TerminalSession session = mActivity.getCurrentSession();
-        if (session == null) return;
-        if (!session.isRunning()) return;
+        if (session == null || !session.isRunning()) return;
+        TerminalEmulator emulator = session.getEmulator();
+        if (emulator == null) return;
 
         String text = ShareUtils.getTextStringFromClipboardIfSet(mActivity, true);
         if (text != null)
-            session.getEmulator().paste(text);
+            emulator.paste(text);
     }
 
     /**

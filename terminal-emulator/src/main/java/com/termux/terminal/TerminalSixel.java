@@ -99,8 +99,9 @@ public final class TerminalSixel {
         if (mPixels == null || !TerminalBitmap.isValidBitmapSize(width, height)) {
             return null;
         }
+        Bitmap bitmap = null;
         try {
-            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             if (bitmap == null) {
                 return null;
             }
@@ -114,6 +115,7 @@ public final class TerminalSixel {
             }
             return bitmap;
         } catch (Throwable t) {
+            TerminalBitmap.recycleUnpublishedBitmap(bitmap);
             if (t instanceof OutOfMemoryError) System.gc();
             Logger.logError(mClient, LOG_TAG, "Materialize sixel bitmap for width " + width +
                 " with height " + height + " failed: " + t.getMessage());

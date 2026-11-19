@@ -31,6 +31,7 @@ import com.termux.terminal.TerminalColors;
 import com.termux.terminal.TerminalSession;
 import com.termux.terminal.TerminalSessionClient;
 import com.termux.terminal.TextStyle;
+import com.termux.view.TerminalView;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -198,10 +199,12 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
     @Override
     public void onPasteTextFromClipboard(@Nullable TerminalSession session) {
         if (!mActivity.isVisible()) return;
+        TerminalView terminalView = mActivity.getTerminalView();
+        if (terminalView == null || terminalView.mEmulator == null) return;
 
         String text = ShareUtils.getTextStringFromClipboardIfSet(mActivity, true);
         if (text != null)
-            mActivity.getTerminalView().mEmulator.paste(text);
+            terminalView.mEmulator.paste(text);
     }
 
     @Override

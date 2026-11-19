@@ -1382,7 +1382,7 @@ public final class TerminalView extends View {
                     }
                     ClipboardManager clipboardManager = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
                     ClipData clipData = clipboardManager != null ? clipboardManager.getPrimaryClip() : null;
-                    if (clipData != null) {
+                    if (clipData != null && clipData.getItemCount() > 0) {
                         ClipData.Item clipItem = clipData.getItemAt(0);
                         if (clipItem != null) {
                             CharSequence text = clipItem.coerceToText(getContext());
