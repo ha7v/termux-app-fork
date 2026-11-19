@@ -264,10 +264,13 @@ public final class TerminalBitmap {
             if (newWidth > maxWidth) {
                 int cropWidth = (int) Math.max(1L, ((long) newBitmap.getWidth() * maxWidth) / newWidth);
                 try {
-                    newBitmap = Bitmap.createBitmap(newBitmap, 0, 0,
+                    Bitmap cropped = Bitmap.createBitmap(newBitmap, 0, 0,
                         Math.min(cropWidth, newBitmap.getWidth()), newBitmap.getHeight());
+                    if (cropped != newBitmap) recycleUnpublishedBitmap(newBitmap);
+                    newBitmap = cropped;
                     newWidth = maxWidth;
                 } catch (Throwable t) {
+                    recycleUnpublishedBitmap(newBitmap);
                     if (t instanceof OutOfMemoryError) System.gc();
                     Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                         "Create terminal bitmap " + bitmapNum + " from image byte array failed:" +
@@ -279,10 +282,13 @@ public final class TerminalBitmap {
             if (newHeight > maxHeight) {
                 int cropHeight = (int) Math.max(1L, ((long) newBitmap.getHeight() * maxHeight) / newHeight);
                 try {
-                    newBitmap = Bitmap.createBitmap(newBitmap, 0, 0,
+                    Bitmap cropped = Bitmap.createBitmap(newBitmap, 0, 0,
                         newBitmap.getWidth(), Math.min(cropHeight, newBitmap.getHeight()));
+                    if (cropped != newBitmap) recycleUnpublishedBitmap(newBitmap);
+                    newBitmap = cropped;
                     newHeight = maxHeight;
                 } catch (Throwable t) {
+                    recycleUnpublishedBitmap(newBitmap);
                     if (t instanceof OutOfMemoryError) System.gc();
                     Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                         "Create terminal bitmap " + bitmapNum + " from image byte array failed:" +
@@ -293,14 +299,18 @@ public final class TerminalBitmap {
 
             if (newBitmap.getWidth() != newWidth || newBitmap.getHeight() != newHeight) {
                 if (!isValidBitmapSize(newWidth, newHeight)) {
+                    recycleUnpublishedBitmap(newBitmap);
                     Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                         "Create terminal bitmap " + bitmapNum + " from image byte array failed:" +
                             " Scaled dimensions " + newWidth + "x" + newHeight + " exceed max bitmap size");
                     return null;
                 }
                 try {
-                    newBitmap = Bitmap.createScaledBitmap(newBitmap, newWidth, newHeight, true);
+                    Bitmap scaled = Bitmap.createScaledBitmap(newBitmap, newWidth, newHeight, true);
+                    if (scaled != newBitmap) recycleUnpublishedBitmap(newBitmap);
+                    newBitmap = scaled;
                 } catch (Throwable t) {
+                    recycleUnpublishedBitmap(newBitmap);
                     if (t instanceof OutOfMemoryError) System.gc();
                     Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                         "Create terminal bitmap " + bitmapNum + " from image byte array failed:" +
@@ -315,14 +325,24 @@ public final class TerminalBitmap {
                 return null;
             }
 
-            return layoutBitmapOnScreen(terminalBuffer, bitmapNum, newBitmap,
+            TerminalBitmap result = layoutBitmapOnScreen(terminalBuffer, bitmapNum, newBitmap,
                 x, y, cellWidth, cellHeight, newBitmap.getWidth(), newBitmap.getHeight(),
                 true, scrollHandler, bottomMargin, effectiveRightMargin);
+            if (result == null) {
+                recycleUnpublishedBitmap(newBitmap);
+            }
+            return result;
         } catch (Throwable t) {
             if (t instanceof OutOfMemoryError) System.gc();
             Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                 "Create terminal bitmap " + bitmapNum + " from image byte array failed: " + t.getMessage());
             return null;
+        }
+    }
+
+    private static void recycleUnpublishedBitmap(Bitmap bitmap) {
+        if (bitmap != null && !bitmap.isRecycled()) {
+            bitmap.recycle();
         }
     }
 

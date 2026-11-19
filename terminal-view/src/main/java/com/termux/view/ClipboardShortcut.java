@@ -52,7 +52,7 @@ public final class ClipboardShortcut {
                                  boolean hasSelection, boolean bracketedPaste, int bareCtrlVPasteMode) {
         if (!ctrl || alt) return Action.NONE;
 
-        switch (Character.toLowerCase((char) codePoint)) {
+        switch (Character.toLowerCase(codePoint)) {
             case 'c':
                 // Copy only when there is something to copy; otherwise Ctrl+C must reach the
                 // program as SIGINT. Ctrl+Shift+C is the explicit desktop copy shortcut and is

@@ -278,14 +278,8 @@ public final class KeyboardProtocol {
                 return formatModifyOtherKeys(modParam, codePoint);
             }
             // Mode 1: only encode combinations that lack a distinct traditional C0 / Meta representation.
-            if (ctrl && !alt) {
-                if (shift || !hasLegacyUnshiftedControlMapping(codePoint)) {
-                    return formatModifyOtherKeys(modParam, codePoint);
-                }
-            } else if (ctrl && alt) {
-                if (shift || !hasLegacyUnshiftedControlMapping(codePoint)) {
-                    return formatModifyOtherKeys(modParam, codePoint);
-                }
+            if (ctrl && (shift || !hasLegacyUnshiftedControlMapping(codePoint))) {
+                return formatModifyOtherKeys(modParam, codePoint);
             }
         }
 

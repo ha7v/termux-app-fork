@@ -296,10 +296,10 @@ public final class TerminalSixel {
 
     public void setRGBColor(int color, int r, int g, int b) {
         if (color >= 0 && color < mColorMap.length) {
-            int red = Math.min(255, r * 255 / 100);
-            int green = Math.min(255, g * 255 / 100);
-            int blue = Math.min(255, b * 255 / 100);
-            mColor = 0xff000000 + (red << 16) + (green << 8) + blue;
+            int red = Math.max(0, Math.min(100, r)) * 255 / 100;
+            int green = Math.max(0, Math.min(100, g)) * 255 / 100;
+            int blue = Math.max(0, Math.min(100, b)) * 255 / 100;
+            mColor = 0xff000000 | (red << 16) | (green << 8) | blue;
             mColorMap[color] = mColor;
         }
     }

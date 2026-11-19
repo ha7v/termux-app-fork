@@ -13,6 +13,7 @@ import com.termux.R;
 import com.termux.app.TermuxActivity;
 import com.termux.shared.termux.extrakeys.ExtraKeysView;
 import com.termux.shared.view.KeyboardUtils;
+import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
 
 public class TerminalToolbarViewPager {
@@ -80,7 +81,12 @@ public class TerminalToolbarViewPager {
                             } else {
                                 // Send the text as a paste like the other paste paths do, so that
                                 // programs that enabled bracketed paste mode receive it in one go.
-                                session.getEmulator().paste(textToSend);
+                                TerminalEmulator emulator = session.getEmulator();
+                                if (emulator != null) {
+                                    emulator.paste(textToSend);
+                                } else {
+                                    session.write(textToSend);
+                                }
                             }
                         } else {
                             mActivity.getTermuxTerminalSessionClient().removeFinishedSession(session);

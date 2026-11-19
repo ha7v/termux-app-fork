@@ -88,4 +88,11 @@ public class ClipboardShortcutTest {
         assertEquals(Action.NONE, resolve('x', true, false, false, true, false, BARE_CTRL_V_BRACKETED));
         assertEquals(Action.NONE, resolve('a', true, true, false, true, false, BARE_CTRL_V_BRACKETED));
     }
+
+    @Test
+    public void supplementaryCodePointsAreNotTruncatedToAsciiShortcuts() {
+        // Low 16 bits match 'c' (0x0063) and 'v' (0x0076), but the code points are supplementary.
+        assertEquals(Action.NONE, ClipboardShortcut.resolve(0x10063, true, false, false, true, true, BARE_CTRL_V_ALWAYS));
+        assertEquals(Action.NONE, ClipboardShortcut.resolve(0x10076, true, true, false, true, true, BARE_CTRL_V_ALWAYS));
+    }
 }

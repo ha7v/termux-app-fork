@@ -178,6 +178,12 @@ public final class TerminalView extends View {
 
     /** Whether a cursor anchor info update has already been posted for the next frame. */
     private boolean mCursorAnchorInfoUpdatePending;
+    private final Runnable mCursorAnchorInfoUpdateRunnable = () -> {
+        mCursorAnchorInfoUpdatePending = false;
+        updateCursorAnchorInfo();
+    };
+    /** Pointer ID of the first finger in an active touch gesture for {@link #mMultiFingerTapDetector}. */
+    private int mMultiFingerTapPrimaryPointerId = MotionEvent.INVALID_POINTER_ID;
 
     /**
      * The current AutoFill type returned for {@link View#getAutofillType()} by {@link #getAutofillType()}.
@@ -691,10 +697,7 @@ public final class TerminalView extends View {
     private void scheduleCursorAnchorInfoUpdate() {
         if (mCursorAnchorInfoUpdatePending) return;
         mCursorAnchorInfoUpdatePending = true;
-        postOnAnimation(() -> {
-            mCursorAnchorInfoUpdatePending = false;
-            updateCursorAnchorInfo();
-        });
+        postOnAnimation(mCursorAnchorInfoUpdateRunnable);
     }
 
     @Override
@@ -884,6 +887,7 @@ public final class TerminalView extends View {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 cancelMousePrimaryGesture();
+                mMultiFingerTapPrimaryPointerId = event.getPointerId(0);
                 mMultiFingerTapDetector.onDown(event.getEventTime(), event.getX(), event.getY());
                 mMultiFingerSwipeDetector.onDown();
                 mGestureWasSwipe = false;
@@ -907,7 +911,12 @@ public final class TerminalView extends View {
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "pointer down, count=" + pointerCount);
                 break;
             case MotionEvent.ACTION_MOVE:
-                mMultiFingerTapDetector.onMove(event.getX(), event.getY());
+                if (mMultiFingerTapPrimaryPointerId != MotionEvent.INVALID_POINTER_ID) {
+                    int primaryIdx = event.findPointerIndex(mMultiFingerTapPrimaryPointerId);
+                    if (primaryIdx >= 0) {
+                        mMultiFingerTapDetector.onMove(event.getX(primaryIdx), event.getY(primaryIdx));
+                    }
+                }
                 if (event.getPointerCount() == 1 && mMultiFingerTapDetector.getMaxPointerCount() == 1) {
                     handleHoldAction(mHoldDetector.onMove(event.getX(), event.getY()));
                 } else {
@@ -922,11 +931,15 @@ public final class TerminalView extends View {
                 }
                 break;
             case MotionEvent.ACTION_POINTER_UP:
+                if (event.getPointerId(event.getActionIndex()) == mMultiFingerTapPrimaryPointerId) {
+                    mMultiFingerTapPrimaryPointerId = MotionEvent.INVALID_POINTER_ID;
+                }
                 if (mForwardedButtonDown) {
                     releaseForwardedButton();
                 }
                 break;
             case MotionEvent.ACTION_UP:
+                mMultiFingerTapPrimaryPointerId = MotionEvent.INVALID_POINTER_ID;
                 stopHoldTimersAndAutoScroll();
                 if (mMultiFingerTapDetector.getMaxPointerCount() == 1) {
                     handleHoldAction(mHoldDetector.onUp(event.getX(), event.getY()));
@@ -945,6 +958,7 @@ public final class TerminalView extends View {
                 break;
             case MotionEvent.ACTION_CANCEL:
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "touch cancelled");
+                mMultiFingerTapPrimaryPointerId = MotionEvent.INVALID_POINTER_ID;
                 mMultiFingerTapDetector.onCancel();
                 mMultiFingerSwipeDetector.onCancel();
                 cancelSingleFingerHold(true);
@@ -2318,6 +2332,9 @@ public final class TerminalView extends View {
         super.onDetachedFromWindow();
 
         stopTerminalCursorBlinker();
+        removeCallbacks(mCursorAnchorInfoUpdateRunnable);
+        mCursorAnchorInfoUpdatePending = false;
+        mMultiFingerTapPrimaryPointerId = MotionEvent.INVALID_POINTER_ID;
         cancelSingleFingerHold(true);
         cancelMousePrimaryGesture();
         resetMouseMotionState();

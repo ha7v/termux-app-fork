@@ -360,4 +360,17 @@ public class TerminalBitmapTest extends TerminalTestCase {
         assertLineIs(0, "HI        ");
     }
 
+    public void testSixelSetRgbColorClampsOutOfRangeValues() {
+        TerminalSixel sixel = TerminalSixel.build(null, 4, 6);
+        assertNotNull(sixel);
+
+        sixel.setRGBColor(1, -50, 150, Integer.MAX_VALUE);
+        assertTrue(sixel.readData('~', 1));
+        assertEquals(0xFF00FFFF, sixel.getPixel(0, 0));
+
+        sixel.setRGBColor(2, Integer.MIN_VALUE, 50, 0);
+        assertTrue(sixel.readData('~', 1));
+        assertEquals(0xFF007F00, sixel.getPixel(1, 0));
+    }
+
 }
