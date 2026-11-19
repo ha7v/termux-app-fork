@@ -107,6 +107,8 @@ public final class TerminalView extends View {
 
     /** Single-finger two-stage hold detector for selection and mouse right-click / drag. */
     final SingleFingerHoldDetector mHoldDetector;
+    /** External mouse primary-button detector for drag/hold selection, Shift bypass and TUI clicks. */
+    final MousePrimaryGestureDetector mMousePrimaryDetector;
     private static final long HOLD_STAGE_1_TIMEOUT_MS = 450L;
     private static final long HOLD_STAGE_2_TIMEOUT_MS = 1200L;
     private static final long DRAG_AUTO_SCROLL_INTERVAL_MS = 60L;
@@ -114,30 +116,31 @@ public final class TerminalView extends View {
     /** Whether {@code onUp} already consumed a tap (e.g. Ctrl+Tap on URL or mouse left click). */
     boolean mConsumedTapInOnUp;
 
-    /** Tracks pending primary-button clicks on an external mouse. */
-    private boolean mMouseModifiedTapPending;
-    private boolean mMousePrimaryTapPending;
-    private float mMouseDownX, mMouseDownY;
     private int mLastHoverCol = -1, mLastHoverRow = -1;
     private int mLastDragCol = -1, mLastDragRow = -1;
-    private final float mTouchSlop;
 
     private final Runnable mHoldStage1Runnable = this::onHoldStage1Timeout;
     private final Runnable mHoldStage2Runnable = this::onHoldStage2Timeout;
+    private final Runnable mMouseStage1Runnable = this::onMouseStage1Timeout;
+    private final Runnable mMouseStage2Runnable = this::onMouseStage2Timeout;
     private final Runnable mDragAutoScrollRunnable = new Runnable() {
         @Override
         public void run() {
-            if (!mHoldDetector.hasDraggedSelectionBeyondSlop() || mEmulator == null || mEmulator.isAlternateBufferActive()) {
+            final boolean touchDrag = mHoldDetector.hasDraggedSelectionBeyondSlop();
+            final boolean mouseDrag = mMousePrimaryDetector.hasDraggedSelectionBeyondSlop();
+            if ((!touchDrag && !mouseDrag) || mEmulator == null || mEmulator.isAlternateBufferActive()) {
                 return;
             }
-            int dir = computeDragAutoScrollDirection(mHoldDetector.getLastY());
+            final float lastX = touchDrag ? mHoldDetector.getLastX() : mMousePrimaryDetector.getLastX();
+            final float lastY = touchDrag ? mHoldDetector.getLastY() : mMousePrimaryDetector.getLastY();
+            int dir = computeDragAutoScrollDirection(lastY);
             if (dir == 0) return;
 
             int minTopRow = -mEmulator.getScreen().getActiveTranscriptRows();
             int nextTopRow = Math.min(0, Math.max(minTopRow, mTopRow + dir));
             if (nextTopRow != mTopRow) {
                 setTopRow(nextTopRow);
-                updateHoldDragSelection(mHoldDetector.getLastX(), mHoldDetector.getLastY());
+                updateHoldDragSelection(lastX, lastY);
                 if (!awakenScrollBars()) invalidate();
             }
             if ((dir < 0 && mTopRow > minTopRow) || (dir > 0 && mTopRow < 0)) {
@@ -227,12 +230,12 @@ public final class TerminalView extends View {
         super(context, attributes);
         ViewConfiguration viewConfiguration = ViewConfiguration.get(context);
         final int touchSlop = viewConfiguration.getScaledTouchSlop();
-        mTouchSlop = touchSlop;
         // A multi-finger tap is forgiving: a generous slop and duration so a natural two-finger tap
         // is not rejected for a little movement or a slightly slow lift.
         mMultiFingerTapDetector = new MultiFingerTapDetector(touchSlop * 4, 1500);
         mMultiFingerSwipeDetector = new MultiFingerSwipeDetector(2, touchSlop * 3, touchSlop * 4);
         mHoldDetector = new SingleFingerHoldDetector(touchSlop, touchSlop * 1.25f);
+        mMousePrimaryDetector = new MousePrimaryGestureDetector(touchSlop, touchSlop * 1.25f);
         mGestureRecognizer = new GestureAndScaleRecognizer(context, new GestureAndScaleRecognizer.Listener() {
 
             boolean scrolledWithFinger;
@@ -417,6 +420,7 @@ public final class TerminalView extends View {
         if (session == mTermSession) return false;
 
         cancelSingleFingerHold(true);
+        cancelMousePrimaryGesture();
         stopTextSelectionMode();
         if (mEmulator != null) {
             mEmulator.reportFocusChange(false);
@@ -721,7 +725,7 @@ public final class TerminalView extends View {
         int rowsInHistory = mEmulator.getScreen().getActiveTranscriptRows();
         if (mTopRow < -rowsInHistory) setTopRow(-rowsInHistory);
 
-        if (isSelectingText() || mHoldDetector.isDraggingTextSelection() || mEmulator.isAutoScrollDisabled()) {
+        if (isSelectingText() || mHoldDetector.isDraggingTextSelection() || mMousePrimaryDetector.isDraggingTextSelection() || mEmulator.isAutoScrollDisabled()) {
             // Do not scroll when selecting text.
             int rowShift = mEmulator.getScrollCounter();
             if (-mTopRow + rowShift > rowsInHistory) {
@@ -731,6 +735,8 @@ public final class TerminalView extends View {
                     stopTextSelectionMode();
                 if (mHoldDetector.isDraggingTextSelection())
                     cancelSingleFingerHold(false);
+                if (mMousePrimaryDetector.isDraggingTextSelection())
+                    cancelMousePrimaryGesture();
 
                 if (mEmulator.isAutoScrollDisabled()) {
                     setTopRow(-rowsInHistory);
@@ -877,6 +883,7 @@ public final class TerminalView extends View {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return;
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                cancelMousePrimaryGesture();
                 mMultiFingerTapDetector.onDown(event.getEventTime(), event.getX(), event.getY());
                 mMultiFingerSwipeDetector.onDown();
                 mGestureWasSwipe = false;
@@ -948,10 +955,12 @@ public final class TerminalView extends View {
     }
 
     private void onHoldStage1Timeout() {
+        if (mEmulator == null) return;
         handleHoldAction(mHoldDetector.onStage1Timeout());
     }
 
     private void onHoldStage2Timeout() {
+        if (mEmulator == null) return;
         handleHoldAction(mHoldDetector.onStage2Timeout());
     }
 
@@ -1040,7 +1049,144 @@ public final class TerminalView extends View {
     private void stopHoldTimersAndAutoScroll() {
         removeCallbacks(mHoldStage1Runnable);
         removeCallbacks(mHoldStage2Runnable);
-        removeCallbacks(mDragAutoScrollRunnable);
+        if (!mMousePrimaryDetector.hasDraggedSelectionBeyondSlop()) {
+            removeCallbacks(mDragAutoScrollRunnable);
+        }
+    }
+
+    private void onMouseStage1Timeout() {
+        if (mEmulator == null) return;
+        handleMousePrimaryAction(mMousePrimaryDetector.onStage1Timeout(), null);
+    }
+
+    private void onMouseStage2Timeout() {
+        if (mEmulator == null) return;
+        handleMousePrimaryAction(mMousePrimaryDetector.onStage2Timeout(), null);
+    }
+
+    private void stopMouseHoldTimersAndAutoScroll() {
+        removeCallbacks(mMouseStage1Runnable);
+        removeCallbacks(mMouseStage2Runnable);
+        if (!mHoldDetector.hasDraggedSelectionBeyondSlop()) {
+            removeCallbacks(mDragAutoScrollRunnable);
+        }
+    }
+
+    private void cancelMousePrimaryGesture() {
+        stopMouseHoldTimersAndAutoScroll();
+        handleMousePrimaryAction(mMousePrimaryDetector.onCancel(), null);
+    }
+
+    private int pixelToCol(float x) {
+        return (int) (x / mRenderer.mFontWidth);
+    }
+
+    private int pixelToRow(float y) {
+        return (int) ((y - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing) + mTopRow;
+    }
+
+    private void beginMouseCharDragSelection(float x, float y) {
+        if (mEmulator == null || mRenderer == null) return;
+        getTextSelectionCursorController().beginCharDragSelection(pixelToCol(x), pixelToRow(y));
+    }
+
+    private void handleMousePrimaryAction(MousePrimaryGestureDetector.Action action, @Nullable MotionEvent event) {
+        if (mEmulator == null) return;
+        switch (action) {
+            case NONE:
+                break;
+            case STOP_TIMERS:
+                stopMouseHoldTimersAndAutoScroll();
+                break;
+            case SCHEDULE_HOLD_STAGE_1:
+                stopMouseHoldTimersAndAutoScroll();
+                postDelayed(mMouseStage1Runnable, HOLD_STAGE_1_TIMEOUT_MS);
+                break;
+            case SCHEDULE_HOLD_STAGE_2:
+                stopMouseHoldTimersAndAutoScroll();
+                postDelayed(mMouseStage2Runnable, HOLD_STAGE_2_TIMEOUT_MS);
+                break;
+            case PRESS_TUI_AND_SCHEDULE_ESCALATION:
+                stopMouseHoldTimersAndAutoScroll();
+                if (mEmulator.isMouseTrackingActive()) {
+                    mForwardedX = mMousePrimaryDetector.getAnchorX();
+                    mForwardedY = mMousePrimaryDetector.getAnchorY();
+                    sendMouseEventCodeAt(TerminalEmulator.MOUSE_LEFT_BUTTON, mForwardedX, mForwardedY, true);
+                    mForwardedButtonDown = true;
+                }
+                postDelayed(mMouseStage2Runnable, HOLD_STAGE_2_TIMEOUT_MS);
+                break;
+            case MOVE_TUI_AND_CANCEL_ESCALATION:
+                removeCallbacks(mMouseStage2Runnable);
+                // fall through
+            case MOVE_TUI:
+                if (mForwardedButtonDown && mEmulator.isMouseTrackingActive()) {
+                    mForwardedX = mMousePrimaryDetector.getLastX();
+                    mForwardedY = mMousePrimaryDetector.getLastY();
+                    sendMouseEventCodeAt(TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, mForwardedX, mForwardedY, true);
+                }
+                break;
+            case RELEASE_TUI:
+                stopMouseHoldTimersAndAutoScroll();
+                releaseForwardedButton();
+                break;
+            case START_CHAR_DRAG_SELECTION:
+                stopMouseHoldTimersAndAutoScroll();
+                if (isSelectingText()) stopTextSelectionMode();
+                if (mMousePrimaryDetector.usedShiftBypass()) mClient.readShiftKey();
+                requestParentDisallowIntercept(true);
+                beginMouseCharDragSelection(mMousePrimaryDetector.getAnchorX(), mMousePrimaryDetector.getAnchorY());
+                updateHoldDragSelection(mMousePrimaryDetector.getLastX(), mMousePrimaryDetector.getLastY());
+                updateDragAutoScroll(mMousePrimaryDetector.getLastY());
+                break;
+            case ESCALATE_TUI_TO_WORD_SELECTION:
+                releaseForwardedButton();
+                // fall through
+            case START_WORD_SELECTION:
+                stopMouseHoldTimersAndAutoScroll();
+                if (dispatchClientLongPress(mMousePrimaryDetector.getAnchorX(), mMousePrimaryDetector.getAnchorY())) {
+                    mMousePrimaryDetector.onCancel();
+                    break;
+                }
+                if (isSelectingText()) stopTextSelectionMode();
+                if (mMousePrimaryDetector.usedShiftBypass()) mClient.readShiftKey();
+                requestParentDisallowIntercept(true);
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                beginHoldDragSelection(mMousePrimaryDetector.getAnchorX(), mMousePrimaryDetector.getAnchorY());
+                break;
+            case UPDATE_TEXT_SELECTION:
+                updateHoldDragSelection(mMousePrimaryDetector.getLastX(), mMousePrimaryDetector.getLastY());
+                updateDragAutoScroll(mMousePrimaryDetector.getLastY());
+                break;
+            case FINISH_TEXT_SELECTION:
+                stopMouseHoldTimersAndAutoScroll();
+                requestParentDisallowIntercept(false);
+                if (mTextSelectionCursorController != null) {
+                    requestFocus();
+                    mTextSelectionCursorController.finishDragSelection();
+                    mClient.copyModeChanged(isSelectingText());
+                }
+                break;
+            case CANCEL_TEXT_SELECTION:
+                stopMouseHoldTimersAndAutoScroll();
+                requestParentDisallowIntercept(false);
+                if (mTextSelectionCursorController != null) {
+                    mTextSelectionCursorController.cancelDragSelection();
+                }
+                break;
+            case DISMISS_SELECTION:
+                stopMouseHoldTimersAndAutoScroll();
+                stopTextSelectionMode();
+                break;
+            case PERFORM_MODIFIED_TAP:
+                stopMouseHoldTimersAndAutoScroll();
+                if (event != null) mClient.onModifiedSingleTap(event);
+                break;
+            case PERFORM_SINGLE_TAP:
+                stopMouseHoldTimersAndAutoScroll();
+                if (event != null) mClient.onSingleTapUp(event);
+                break;
+        }
     }
 
     private void performLightHoldHaptic() {
@@ -1062,16 +1208,12 @@ public final class TerminalView extends View {
 
     private void beginHoldDragSelection(float x, float y) {
         if (mEmulator == null || mRenderer == null) return;
-        int col = (int) (x / mRenderer.mFontWidth);
-        int row = (int) ((y - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing) + mTopRow;
-        getTextSelectionCursorController().beginDragSelection(col, row);
+        getTextSelectionCursorController().beginDragSelection(pixelToCol(x), pixelToRow(y));
     }
 
     private void updateHoldDragSelection(float x, float y) {
         if (mEmulator == null || mRenderer == null || mTextSelectionCursorController == null) return;
-        int col = (int) (x / mRenderer.mFontWidth);
-        int row = (int) ((y - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing) + mTopRow;
-        mTextSelectionCursorController.updateAnchoredDragSelection(col, row);
+        mTextSelectionCursorController.updateAnchoredDragSelection(pixelToCol(x), pixelToRow(y));
     }
 
     private int computeDragAutoScrollDirection(float y) {
@@ -1188,7 +1330,10 @@ public final class TerminalView extends View {
     @TargetApi(23)
     public boolean onTouchEvent(MotionEvent event) {
         if (mEmulator == null) return true;
-        final int action = event.getAction();
+
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            return handleMouseTouchEvent(event);
+        }
 
         updateTouchGestures(event);
 
@@ -1196,76 +1341,60 @@ public final class TerminalView extends View {
             updateFloatingToolbarVisibility(event);
             mGestureRecognizer.onTouchEvent(event);
             return true;
-        } else if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
-            if (event.isButtonPressed(MotionEvent.BUTTON_SECONDARY)) {
-                if (action == MotionEvent.ACTION_DOWN) showContextMenu();
-                return true;
-            } else if (event.isButtonPressed(MotionEvent.BUTTON_TERTIARY)) {
-                ClipboardManager clipboardManager = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-                ClipData clipData = clipboardManager.getPrimaryClip();
-                if (clipData != null) {
-                    ClipData.Item clipItem = clipData.getItemAt(0);
-                    if (clipItem != null) {
-                        CharSequence text = clipItem.coerceToText(getContext());
-                        if (!TextUtils.isEmpty(text)) mEmulator.paste(text.toString());
-                    }
-                }
-                return true;
-            } else {
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        requestFocus();
-                        mMouseModifiedTapPending = false;
-                        mMousePrimaryTapPending = false;
-                        if (event.isButtonPressed(MotionEvent.BUTTON_PRIMARY)) {
-                            mMouseDownX = event.getX();
-                            mMouseDownY = event.getY();
-                            if (mClient.shouldInterceptModifiedTap(event)) {
-                                mMouseModifiedTapPending = true;
-                            } else if (mEmulator.isMouseTrackingActive()) {
-                                mForwardedX = event.getX();
-                                mForwardedY = event.getY();
-                                sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, true);
-                                mForwardedButtonDown = true;
-                            } else {
-                                mMousePrimaryTapPending = true;
-                            }
-                        }
-                        break;
-                    case MotionEvent.ACTION_MOVE:
-                        if ((mMouseModifiedTapPending || mMousePrimaryTapPending) &&
-                            Math.hypot(event.getX() - mMouseDownX, event.getY() - mMouseDownY) >= mTouchSlop) {
-                            mMouseModifiedTapPending = false;
-                            mMousePrimaryTapPending = false;
-                        }
-                        if (!mMouseModifiedTapPending && mForwardedButtonDown && mEmulator.isMouseTrackingActive()) {
-                            mForwardedX = event.getX();
-                            mForwardedY = event.getY();
-                            sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
-                        }
-                        break;
-                    case MotionEvent.ACTION_UP:
-                        if (mMouseModifiedTapPending) {
-                            mMouseModifiedTapPending = false;
-                            mClient.onModifiedSingleTap(event);
-                        } else if (mForwardedButtonDown) {
-                            releaseForwardedButton();
-                        } else if (mMousePrimaryTapPending) {
-                            mMousePrimaryTapPending = false;
-                            mClient.onSingleTapUp(event);
-                        }
-                        break;
-                    case MotionEvent.ACTION_CANCEL:
-                        mMouseModifiedTapPending = false;
-                        mMousePrimaryTapPending = false;
-                        releaseForwardedButton();
-                        break;
-                }
-                return true;
-            }
         }
 
         mGestureRecognizer.onTouchEvent(event);
+        return true;
+    }
+
+    private boolean handleMouseTouchEvent(MotionEvent event) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                cancelSingleFingerHold(true);
+                requestFocus();
+                if (event.isButtonPressed(MotionEvent.BUTTON_SECONDARY)) {
+                    cancelMousePrimaryGesture();
+                    if (isSelectingText()) {
+                        if (mTextSelectionCursorController != null) {
+                            mTextSelectionCursorController.storeSelectedText();
+                        }
+                        stopTextSelectionMode();
+                    }
+                    showContextMenu();
+                } else if (event.isButtonPressed(MotionEvent.BUTTON_TERTIARY)) {
+                    cancelMousePrimaryGesture();
+                    if (isSelectingText()) {
+                        stopTextSelectionMode();
+                    }
+                    ClipboardManager clipboardManager = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+                    ClipData clipData = clipboardManager != null ? clipboardManager.getPrimaryClip() : null;
+                    if (clipData != null) {
+                        ClipData.Item clipItem = clipData.getItemAt(0);
+                        if (clipItem != null) {
+                            CharSequence text = clipItem.coerceToText(getContext());
+                            if (!TextUtils.isEmpty(text)) mEmulator.paste(text.toString());
+                        }
+                    }
+                } else if (event.isButtonPressed(MotionEvent.BUTTON_PRIMARY)) {
+                    cancelMousePrimaryGesture();
+                    boolean modifiedIntercept = mClient.shouldInterceptModifiedTap(event);
+                    boolean shiftBypass = !modifiedIntercept && mClient.isShiftModifierActive(event);
+                    handleMousePrimaryAction(mMousePrimaryDetector.onDown(
+                        event.getX(), event.getY(),
+                        mEmulator.isMouseTrackingActive(),
+                        modifiedIntercept, shiftBypass, isSelectingText()), event);
+                }
+                break;
+            case MotionEvent.ACTION_MOVE:
+                handleMousePrimaryAction(mMousePrimaryDetector.onMove(event.getX(), event.getY()), event);
+                break;
+            case MotionEvent.ACTION_UP:
+                handleMousePrimaryAction(mMousePrimaryDetector.onUp(event.getX(), event.getY()), event);
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                cancelMousePrimaryGesture();
+                break;
+        }
         return true;
     }
 
@@ -2023,9 +2152,9 @@ public final class TerminalView extends View {
     }
 
     /**
-     * Cancel the terminal cursor blinker callbacks
+     * Cancel the terminal cursor blinker callbacks for this view without altering {@link #mEmulator}.
      */
-    private void stopTerminalCursorBlinker() {
+    public synchronized void stopTerminalCursorBlinker() {
         if (mTerminalCursorBlinkerHandler != null && mTerminalCursorBlinkerRunnable != null) {
             if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
                 mClient.logVerbose(LOG_TAG, "Stopping cursor blinker");
@@ -2124,7 +2253,10 @@ public final class TerminalView extends View {
      */
     public boolean copySelectionToClipboard() {
         if (!isSelectingText()) return false;
-        mTermSession.onCopyTextToClipboard(getSelectedText());
+        String selectedText = getSelectedText();
+        if (!TextUtils.isEmpty(selectedText)) {
+            mTermSession.onCopyTextToClipboard(selectedText);
+        }
         stopTextSelectionMode();
         return true;
     }
@@ -2185,8 +2317,9 @@ public final class TerminalView extends View {
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
 
+        stopTerminalCursorBlinker();
         cancelSingleFingerHold(true);
-        mMouseModifiedTapPending = false;
+        cancelMousePrimaryGesture();
         resetMouseMotionState();
         releaseForwardedButton();
         mMultiFingerTapDetector.onCancel();

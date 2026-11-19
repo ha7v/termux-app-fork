@@ -69,7 +69,11 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         // The service has connected, but data may have changed since we were last in the foreground.
         // Get the session stored in shared preferences stored by {@link #onStop} if its valid,
         // otherwise get the last session currently running.
-        if (mActivity.getTermuxService() != null) {
+        TermuxService service = mActivity.getTermuxService();
+        if (service != null) {
+            if (service.getTermuxTerminalSessionClient() != this) {
+                service.setTermuxTerminalSessionClient(this);
+            }
             setCurrentSession(getCurrentStoredSessionOrLast());
             termuxSessionListNotifyUpdated();
         }
@@ -94,8 +98,12 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
      */
     public void onStop() {
         // Store current session in shared preferences so that it can be restored later in
-        // {@link #onStart} if needed.
-        setCurrentStoredSession();
+        // {@link #onStart} if needed, unless a newer TermuxActivity has already claimed the service
+        // session client before our deferred onStop() runs.
+        TermuxService service = mActivity.getTermuxService();
+        if (service == null || service.getTermuxTerminalSessionClient() == this) {
+            setCurrentStoredSession();
+        }
 
         // Release mBellSoundPool resources, specially to prevent exceptions like the following to be thrown
         // java.util.concurrent.TimeoutException: android.media.SoundPool.finalize() timed out after 10 seconds

@@ -47,6 +47,15 @@ public interface TerminalViewClient {
         return false;
     }
 
+    /**
+     * Whether {@code Shift} is active for {@code event} (either held on a hardware keyboard or
+     * latched on the extra keys bar, without consuming a latched modifier yet), used to let
+     * {@code Shift+Left} bypass TUI mouse tracking on an external mouse.
+     */
+    default boolean isShiftModifierActive(MotionEvent event) {
+        return (event.getMetaState() & KeyEvent.META_SHIFT_ON) != 0;
+    }
+
     boolean shouldBackButtonBeMappedToEscape();
 
     boolean shouldEnforceCharBasedInput();

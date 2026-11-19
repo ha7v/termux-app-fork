@@ -136,8 +136,15 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
      * Should be called when mActivity.onStop() is called
      */
     public void onStop() {
-        // Stop terminal cursor blinking if enabled
-        setTerminalCursorBlinkerState(false);
+        // Stop terminal cursor blinking if enabled. If a newer TermuxActivity has already claimed
+        // the service session client before our deferred onStop() runs, only cancel this view's
+        // local handler callbacks so we do not disable cursor blinking on the shared emulator.
+        if (mActivity.getTermuxService() != null &&
+            mActivity.getTermuxService().getTermuxTerminalSessionClient() != mTermuxTerminalSessionActivityClient) {
+            mActivity.getTerminalView().stopTerminalCursorBlinker();
+        } else {
+            setTerminalCursorBlinkerState(false);
+        }
     }
 
     /**
@@ -233,6 +240,12 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
             else
                 Logger.logVerbose(LOG_TAG, "Not showing soft keyboard onSingleTapUp since its disabled");
         }
+    }
+
+    @Override
+    public boolean isShiftModifierActive(MotionEvent e) {
+        return (e.getMetaState() & KeyEvent.META_SHIFT_ON) != 0 ||
+            peekExtraKeysSpecialButton(SpecialButton.SHIFT);
     }
 
     private boolean isControlModifierActive(MotionEvent e) {

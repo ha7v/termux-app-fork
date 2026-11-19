@@ -1,8 +1,9 @@
 package com.termux.terminal;
 
-import android.util.Base64;
-
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 
@@ -137,9 +138,29 @@ public class OperatingSystemControlTest extends TerminalTestCase {
 		assertIndexColorsMatch(TerminalColors.COLOR_SCHEME.mDefaultColors);
 	}
 
-	public void disabledTestSetClipboard() {
-		// Cannot run this as a unit test since Base64 is a android.util class.
-		enterString("\033]52;c;" + Base64.encodeToString("Hello, world".getBytes(), 0) + "\007");
+	public void testOsc52SetClipboardAndIgnoreQueries() {
+		withTerminalSized(10, 5);
+
+		String encoded = java.util.Base64.getEncoder().encodeToString("Hello, 剪贴板!".getBytes(StandardCharsets.UTF_8));
+		enterString("\033]52;c;" + encoded + "\007");
+		assertEquals(Collections.singletonList("Hello, 剪贴板!"), mOutput.clipboardPuts);
+		assertEquals("", mOutput.getOutputAndClear());
+
+		// Wrapped MIME base64 (76-char line breaks) and ST terminator must decode cleanly.
+		String wrapped = java.util.Base64.getMimeEncoder(4, "\r\n".getBytes(StandardCharsets.US_ASCII))
+			.encodeToString("line-wrapped payload".getBytes(StandardCharsets.UTF_8));
+		enterString("\033]52;;" + wrapped + "\033\\");
+		assertEquals(Arrays.asList("Hello, 剪贴板!", "line-wrapped payload"), mOutput.clipboardPuts);
+
+		// OSC 52 clipboard queries ("?"), empty payloads, missing ';', and invalid Base64 must
+		// neither reply nor overwrite the clipboard with an empty string.
+		enterString("\033]52;c;?\007");
+		enterString("\033]52;+;?\033\\");
+		enterString("\033]52;c;\007");
+		enterString("\033]52;no-semicolon\007");
+		enterString("\033]52;c;not!valid@base64\007");
+		assertEquals(Arrays.asList("Hello, 剪贴板!", "line-wrapped payload"), mOutput.clipboardPuts);
+		assertEquals("", mOutput.getOutputAndClear());
 	}
 
 	public void testOsc52SmallPayloadIsConsumed() {
@@ -153,6 +174,8 @@ public class OperatingSystemControlTest extends TerminalTestCase {
 		withTerminalSized(10, 5);
 		enterString("\033]52;c;" + base64 + "\007");
 		assertLinesAre("          ", "          ", "          ", "          ", "          ");
+		assertEquals(1, mOutput.clipboardPuts.size());
+		assertEquals(6000, mOutput.clipboardPuts.get(0).length());
 	}
 
 	public void testOsc52LargePayloadIsNotTruncated() {
@@ -161,8 +184,7 @@ public class OperatingSystemControlTest extends TerminalTestCase {
 		// and leaked onto the screen. See
 		// https://github.com/termux/termux-app/issues/5324.
 		// 20000 bytes -> 26668 base64 chars: over the 16384 default, under
-		// the ~100KB limit set for OSC 52. Uses java.util.Base64 since
-		// android.util.Base64 is not available in unit tests.
+		// the ~100KB limit set for OSC 52.
 		byte[] payload = new byte[20000];
 		for (int i = 0; i < payload.length; i++) payload[i] = 'X';
 		String base64 = java.util.Base64.getEncoder().encodeToString(payload);
@@ -172,6 +194,8 @@ public class OperatingSystemControlTest extends TerminalTestCase {
 		// The whole sequence must be consumed as OSC: none of the payload
 		// may leak onto the screen.
 		assertLinesAre("          ", "          ", "          ", "          ", "          ");
+		assertEquals(1, mOutput.clipboardPuts.size());
+		assertEquals(20000, mOutput.clipboardPuts.get(0).length());
 	}
 
 	public void testResettingTerminalResetsColor() throws Exception {

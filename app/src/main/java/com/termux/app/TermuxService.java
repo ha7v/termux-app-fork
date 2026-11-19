@@ -760,8 +760,10 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     public synchronized void setTermuxTerminalSessionClient(TermuxTerminalSessionActivityClient termuxTerminalSessionActivityClient) {
         mTermuxTerminalSessionActivityClient = termuxTerminalSessionActivityClient;
 
-        for (int i = 0; i < mShellManager.mTermuxSessions.size(); i++)
-            mShellManager.mTermuxSessions.get(i).getTerminalSession().updateTerminalSessionClient(mTermuxTerminalSessionActivityClient);
+        if (mShellManager != null) {
+            for (int i = 0; i < mShellManager.mTermuxSessions.size(); i++)
+                mShellManager.mTermuxSessions.get(i).getTerminalSession().updateTerminalSessionClient(mTermuxTerminalSessionActivityClient);
+        }
     }
 
     /** This should be called when {@link TermuxActivity} has been destroyed and in {@link #onUnbind(Intent)}
@@ -769,8 +771,26 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
      * clients do not hold an activity references.
      */
     public synchronized void unsetTermuxTerminalSessionClient() {
-        for (int i = 0; i < mShellManager.mTermuxSessions.size(); i++)
-            mShellManager.mTermuxSessions.get(i).getTerminalSession().updateTerminalSessionClient(mTermuxTerminalSessionServiceClient);
+        unsetTermuxTerminalSessionClient(null);
+    }
+
+    /**
+     * Unset the active {@link TermuxTerminalSessionActivityClient} only if it matches
+     * {@code expectedClient} (or unconditionally when {@code expectedClient} is {@code null}, such
+     * as from {@link #onUnbind(Intent)} when all activities have unbound). Prevents a finishing
+     * {@link TermuxActivity}'s deferred {@code onDestroy()} from clobbering a newly started
+     * {@link TermuxActivity} that has already registered its own client.
+     */
+    public synchronized void unsetTermuxTerminalSessionClient(@Nullable TermuxTerminalSessionActivityClient expectedClient) {
+        if (expectedClient != null && mTermuxTerminalSessionActivityClient != expectedClient) {
+            Logger.logDebug(LOG_TAG, "Ignoring unsetTermuxTerminalSessionClient from stale activity client");
+            return;
+        }
+
+        if (mShellManager != null) {
+            for (int i = 0; i < mShellManager.mTermuxSessions.size(); i++)
+                mShellManager.mTermuxSessions.get(i).getTerminalSession().updateTerminalSessionClient(mTermuxTerminalSessionServiceClient);
+        }
 
         mTermuxTerminalSessionActivityClient = null;
     }

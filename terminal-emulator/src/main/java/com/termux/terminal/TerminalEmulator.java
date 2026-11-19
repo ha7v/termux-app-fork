@@ -2,7 +2,6 @@ package com.termux.terminal;
 
 import android.system.Os;
 import android.system.StructUtsname;
-import android.util.Base64;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -3082,13 +3081,7 @@ public final class TerminalEmulator {
                 }
                 break;
             case 52: // Manipulate Selection Data. Skip the optional first selection parameter(s).
-                int startIndex = textParameter.indexOf(";") + 1;
-                try {
-                    String clipboardText = new String(Base64.decode(textParameter.substring(startIndex), Base64.DEFAULT), StandardCharsets.UTF_8);
-                    mSession.onCopyTextToClipboard(clipboardText);
-                } catch (Exception e) {
-                    Logger.logError(mClient, LOG_TAG, "OSC Manipulate selection, invalid string '" + textParameter + "'");
-                }
+                handleOsc52(textParameter);
                 break;
             case 104:
                 // "104;$c" → Reset Color Number $c. It is reset to the color specified by the corresponding X
@@ -3916,6 +3909,97 @@ public final class TerminalEmulator {
 
     public String getSelectedText(int x1, int y1, int x2, int y2) {
         return mScreen.getSelectedText(x1, y1, x2, y2);
+    }
+
+    /**
+     * Handle {@code OSC 52 ; Pc ; Pd ST} clipboard manipulation.
+     *
+     * <p>Clipboard queries ({@code Pd = "?"}) are intentionally ignored for security, and empty
+     * payloads are skipped so remote programs do not wipe the system clipboard.
+     */
+    private void handleOsc52(String textParameter) {
+        int semiIndex = textParameter.indexOf(';');
+        if (semiIndex < 0) return;
+
+        int start = semiIndex + 1;
+        int end = textParameter.length();
+        while (start < end && isAsciiWhitespace(textParameter.charAt(start))) start++;
+        while (end > start && isAsciiWhitespace(textParameter.charAt(end - 1))) end--;
+        if (start >= end) return;
+        if (end - start == 1 && textParameter.charAt(start) == '?') return;
+
+        try {
+            byte[] decoded = decodeOsc52Base64(textParameter, start, end);
+            if (decoded.length == 0) return;
+            String clipboardText = new String(decoded, StandardCharsets.UTF_8);
+            if (!clipboardText.isEmpty()) {
+                mSession.onCopyTextToClipboard(clipboardText);
+            }
+        } catch (IllegalArgumentException e) {
+            Logger.logError(mClient, LOG_TAG, "OSC Manipulate selection, invalid string '" + textParameter + "'");
+        }
+    }
+
+    private static boolean isAsciiWhitespace(char ch) {
+        return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+    }
+
+    private static byte[] decodeOsc52Base64(String s, int start, int end) {
+        byte[] out = new byte[((end - start) * 3) / 4 + 3];
+        int outPos = 0;
+        int buffer = 0;
+        int quantumLen = 0;
+        int padCount = 0;
+
+        for (int i = start; i < end; i++) {
+            char ch = s.charAt(i);
+            if (isAsciiWhitespace(ch)) continue;
+            if (ch == '=') {
+                padCount++;
+                if (padCount > 2 || quantumLen + padCount > 4) {
+                    throw new IllegalArgumentException("Invalid Base64 padding");
+                }
+                continue;
+            }
+            if (padCount > 0) {
+                throw new IllegalArgumentException("Unexpected character after Base64 padding");
+            }
+            int val;
+            if (ch >= 'A' && ch <= 'Z') {
+                val = ch - 'A';
+            } else if (ch >= 'a' && ch <= 'z') {
+                val = ch - 'a' + 26;
+            } else if (ch >= '0' && ch <= '9') {
+                val = ch - '0' + 52;
+            } else if (ch == '+') {
+                val = 62;
+            } else if (ch == '/') {
+                val = 63;
+            } else {
+                throw new IllegalArgumentException("Invalid Base64 character");
+            }
+            buffer = (buffer << 6) | val;
+            if (++quantumLen == 4) {
+                out[outPos++] = (byte) (buffer >> 16);
+                out[outPos++] = (byte) (buffer >> 8);
+                out[outPos++] = (byte) buffer;
+                buffer = 0;
+                quantumLen = 0;
+            }
+        }
+
+        if (quantumLen == 0) {
+            if (padCount != 0) throw new IllegalArgumentException("Orphan Base64 padding");
+        } else if (quantumLen == 1) {
+            throw new IllegalArgumentException("Truncated Base64 quantum");
+        } else if (quantumLen == 2) {
+            if (padCount == 1) throw new IllegalArgumentException("Invalid single '=' padding");
+            out[outPos++] = (byte) (buffer >> 4);
+        } else {
+            out[outPos++] = (byte) (buffer >> 10);
+            out[outPos++] = (byte) (buffer >> 2);
+        }
+        return outPos == out.length ? out : Arrays.copyOf(out, outPos);
     }
 
     /** Get the terminal session's title (null if not set). */

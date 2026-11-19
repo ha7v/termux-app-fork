@@ -114,7 +114,7 @@ public class TextSelectionCursorController implements CursorController {
         int x1 = Math.max(0, Math.min(col, maxX));
         int x2 = x1;
 
-        if (!" ".equals(screen.getSelectedText(x1, y, x1, y))) {
+        if (!"".equals(screen.getSelectedText(x1, y, x1, y))) {
             // Selecting something other than whitespace. Expand to word.
             while (x1 > 0 && !"".equals(screen.getSelectedText(x1 - 1, y, x1 - 1, y))) {
                 x1--;
@@ -136,6 +136,21 @@ public class TextSelectionCursorController implements CursorController {
         mDragAnchorX1 = bounds[0];
         mDragAnchorX2 = bounds[1];
         mDragAnchorY = bounds[2];
+        setDragSelection(mDragAnchorX1, mDragAnchorY, mDragAnchorX2, mDragAnchorY);
+    }
+
+    /**
+     * Start a character-granular drag selection anchored at {@code (col, row)} (used for external
+     * mouse click-and-drag), keeping handles hidden until the button is released.
+     */
+    public void beginCharDragSelection(int col, int row) {
+        if (terminalView.mEmulator == null) return;
+        TerminalBuffer screen = terminalView.mEmulator.getScreen();
+        final int minY = -(screen.getActiveRows() - terminalView.mEmulator.mRows);
+        final int maxY = terminalView.mEmulator.mRows - 1;
+        final int maxX = terminalView.mEmulator.mColumns - 1;
+        mDragAnchorY = Math.max(minY, Math.min(row, maxY));
+        mDragAnchorX1 = mDragAnchorX2 = Math.max(0, Math.min(col, maxX));
         setDragSelection(mDragAnchorX1, mDragAnchorY, mDragAnchorX2, mDragAnchorY);
     }
 
@@ -192,7 +207,9 @@ public class TextSelectionCursorController implements CursorController {
         mStartHandle.positionAtCursor(mSelX1, mSelY1, true);
         mEndHandle.positionAtCursor(mSelX2 + 1, mSelY2, true);
         setActionModeCallBacks();
-        mShowStartTime = System.currentTimeMillis();
+        // Pointer is already lifted on finishDragSelection(), so do not arm the 300ms down-key
+        // guard that would block quick Ctrl+C / Copy / tap dismissal.
+        mShowStartTime = 0;
         mIsSelectingText = true;
         terminalView.invalidate();
     }
@@ -470,6 +487,13 @@ public class TextSelectionCursorController implements CursorController {
     /** Get the currently selected text. */
     public String getSelectedText() {
         return terminalView.mEmulator.getSelectedText(mSelX1, mSelY1, mSelX2, mSelY2);
+    }
+
+    /** Snapshot the currently selected text before stopping selection to open the context menu. */
+    public void storeSelectedText() {
+        if (isActive()) {
+            mStoredSelectedText = getSelectedText();
+        }
     }
 
     /** Get the selected text stored before "MORE" button was pressed on the context menu. */
