@@ -220,6 +220,11 @@
                 <!-- Drawer Gesture Exclusion Width -->
                 <string name="termux_terminal_view_drawer_gesture_exclusion_width_title">Drawer Edge Gesture Width</string>
 
+                <!-- Reverse Two-Finger Session Swipe -->
+                <string name="termux_terminal_view_reverse_session_swipe_title">Reverse Session Swipe</string>
+                <string name="termux_terminal_view_reverse_session_swipe_off">Two-finger swipe left for next session, right for previous. (Default)</string>
+                <string name="termux_terminal_view_reverse_session_swipe_on">Two-finger swipe right for next session, left for previous.</string>
+
 
 
     <!-- Termux:API App Preferences -->

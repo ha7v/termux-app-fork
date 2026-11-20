@@ -291,4 +291,13 @@ public class TermuxAppSharedPreferences extends AppSharedPreferences {
         SharedPreferenceUtils.setIntStoredAsString(mSharedPreferences, TERMUX_APP.KEY_DRAWER_GESTURE_EXCLUSION_WIDTH, value, false);
     }
 
+    /** Whether to reverse the two-finger horizontal session swipe direction. */
+    public boolean isSessionSwipeReversed() {
+        return SharedPreferenceUtils.getBoolean(mSharedPreferences, TERMUX_APP.KEY_REVERSE_SESSION_SWIPE, TERMUX_APP.DEFAULT_VALUE_KEY_REVERSE_SESSION_SWIPE);
+    }
+
+    public void setSessionSwipeReversed(boolean value) {
+        SharedPreferenceUtils.setBoolean(mSharedPreferences, TERMUX_APP.KEY_REVERSE_SESSION_SWIPE, value, false);
+    }
+
 }

@@ -926,7 +926,7 @@ public final class TerminalView extends View {
                         if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
                             mClient.logInfo(LOG_TAG, "two-finger swipe " + (swipe == MultiFingerSwipeDetector.SWIPE_RIGHT ? "right" : "left"));
                         }
-                        mClient.onSessionSwipe(swipe == MultiFingerSwipeDetector.SWIPE_RIGHT);
+                        mClient.onSessionSwipe(swipe == MultiFingerSwipeDetector.SWIPE_LEFT);
                     }
                 }
                 break;

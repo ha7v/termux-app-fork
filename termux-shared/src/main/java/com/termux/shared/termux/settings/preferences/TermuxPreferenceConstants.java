@@ -144,6 +144,13 @@ public final class TermuxPreferenceConstants {
         public static final String KEY_DRAWER_GESTURE_EXCLUSION_WIDTH = "drawer_gesture_exclusion_width";
         public static final int DEFAULT_VALUE_KEY_DRAWER_GESTURE_EXCLUSION_WIDTH = 20;
 
+        /**
+         * Defines the key for whether to reverse the two-finger horizontal session swipe direction.
+         * Default is {@code false} (swipe left for next session, right for previous).
+         */
+        public static final String KEY_REVERSE_SESSION_SWIPE = "reverse_session_swipe";
+        public static final boolean DEFAULT_VALUE_KEY_REVERSE_SESSION_SWIPE = false;
+
 
         /**
          * Defines the key for whether to always keep screen on.

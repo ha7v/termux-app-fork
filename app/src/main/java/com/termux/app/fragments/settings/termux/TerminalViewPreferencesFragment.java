@@ -56,7 +56,10 @@ class TerminalViewPreferencesDataStore extends PreferenceDataStore {
 
         switch (key) {
             case "terminal_margin_adjustment":
-                    mPreferences.setTerminalMarginAdjustment(value);
+                mPreferences.setTerminalMarginAdjustment(value);
+                break;
+            case "reverse_session_swipe":
+                mPreferences.setSessionSwipeReversed(value);
                 break;
             default:
                 break;
@@ -65,11 +68,13 @@ class TerminalViewPreferencesDataStore extends PreferenceDataStore {
 
     @Override
     public boolean getBoolean(String key, boolean defValue) {
-        if (mPreferences == null) return false;
+        if (mPreferences == null || key == null) return false;
 
         switch (key) {
             case "terminal_margin_adjustment":
                 return mPreferences.isTerminalMarginAdjustmentEnabled();
+            case "reverse_session_swipe":
+                return mPreferences.isSessionSwipeReversed();
             default:
                 return false;
         }

@@ -356,6 +356,10 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
     @Override
     public boolean onSessionSwipe(boolean forward) {
+        TermuxAppSharedPreferences preferences = mActivity.getPreferences();
+        if (preferences != null && preferences.isSessionSwipeReversed()) {
+            forward = !forward;
+        }
         mTermuxTerminalSessionActivityClient.switchToSession(forward);
         return true;
     }

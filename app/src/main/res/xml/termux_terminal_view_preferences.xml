@@ -18,6 +18,12 @@
             app:defaultValue="20"
             app:useSimpleSummaryProvider="true" />
 
+        <SwitchPreferenceCompat
+            app:key="reverse_session_swipe"
+            app:summaryOff="@string/termux_terminal_view_reverse_session_swipe_off"
+            app:summaryOn="@string/termux_terminal_view_reverse_session_swipe_on"
+            app:title="@string/termux_terminal_view_reverse_session_swipe_title" />
+
     </PreferenceCategory>
 
 </PreferenceScreen>

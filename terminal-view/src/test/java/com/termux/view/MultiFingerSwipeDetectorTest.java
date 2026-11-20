@@ -27,7 +27,7 @@ public class MultiFingerSwipeDetectorTest {
     }
 
     @Test
-    public void leftSwipeIsPrevious() {
+    public void leftSwipeIsDetected() {
         MultiFingerSwipeDetector d = ready(100f, 100f);
         assertEquals(MultiFingerSwipeDetector.SWIPE_LEFT, d.onMove(2, 100f - MIN_H, 100f, BASE_SPAN));
         assertTrue(d.isSwipeLocked());
@@ -35,7 +35,7 @@ public class MultiFingerSwipeDetectorTest {
     }
 
     @Test
-    public void rightSwipeIsNext() {
+    public void rightSwipeIsDetected() {
         MultiFingerSwipeDetector d = ready(100f, 100f);
         assertEquals(MultiFingerSwipeDetector.SWIPE_RIGHT, d.onMove(2, 100f + MIN_H, 100f, BASE_SPAN));
         assertTrue(d.isSwipeLocked());

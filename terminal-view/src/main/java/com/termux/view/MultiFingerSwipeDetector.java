@@ -22,9 +22,9 @@ package com.termux.view;
 public final class MultiFingerSwipeDetector {
 
     public static final int SWIPE_NONE = 0;
-    /** Swipe towards the left edge, i.e. towards the previous session. */
+    /** Swipe towards the left edge (centroid moves left, {@code dx < 0}). */
     public static final int SWIPE_LEFT = -1;
-    /** Swipe towards the right edge, i.e. towards the next session. */
+    /** Swipe towards the right edge (centroid moves right, {@code dx > 0}). */
     public static final int SWIPE_RIGHT = 1;
 
     /** Default relative span change (±23%) required before locking a two-finger gesture to zoom. */
